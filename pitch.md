@@ -41,3 +41,35 @@ I have lots of copilot and claude logs on my machine.
 There have been lots of efforts to build an agent dashboard. I'm not looking for anything fancy,
 but what a "working developer" appreciates as another tool to help them be productive
 and derive meaning in their "cnc mill shop".
+
+## .NET Ecosystem Focus
+
+Other tools are doing something similar for general audiences. This tool is available for and optimized for the .NET ecosystem.
+
+### Distribution
+
+- Available as a .NET global tool (`dotnet tool install -g ncr`)
+- Components separately available as libraries for independent use (e.g., reading Claude Code or Copilot logs programmatically)
+
+### .NET Tool Observability
+
+The dashboard includes data about .NET tool use:
+
+- Track top N tool calls with counts (e.g., "15 `dotnet build` calls")
+- Include duration when available
+- Surface patterns in CLI usage during sessions
+
+### Target Audience
+
+- **Good tool** for typical .NET developers who want visibility into their AI coding sessions
+- **Excellent tool** for .NET Team members validating .NET product performance and function
+
+### Philosophy
+
+Focus on .NET tool/product observability. We may find that observability alone isn't sufficient to enable the experience we want. That may result in product changes (improved telemetry, structured output, etc.).
+
+### Implementation Notes
+
+- Start by adding .NET CLI/tool use tracking in session detail pages
+- Parse Bash tool calls for `dotnet` commands
+- Track command types, arguments, and execution patterns
