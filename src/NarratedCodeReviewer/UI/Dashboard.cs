@@ -1,4 +1,5 @@
 using Spectre.Console;
+using Spectre.Console.Rendering;
 using NarratedCodeReviewer.Domain;
 using NarratedCodeReviewer.Services;
 
@@ -17,8 +18,12 @@ public class Dashboard
     private int _selectedIndex;
     private string? _selectedSessionId;
     private int _selectedChangeIndex;
+    private int _changeScrollOffset;
+    private bool _newestFirst = true;  // Default to newest first
     private bool _dataChanged = true;
     private bool _running = true;
+
+    private const int MaxVisibleChanges = 15;  // Max changes to show at once
 
     private IReadOnlyList<Session> _sessions = [];
 
@@ -147,6 +152,42 @@ public class Dashboard
             case ConsoleKey.R:
                 _dataChanged = true;
                 break;
+
+            case ConsoleKey.S when _currentView == ViewState.SessionDetail:
+                _newestFirst = !_newestFirst;
+                _selectedChangeIndex = 0;
+                _changeScrollOffset = 0;
+                break;
+
+            case ConsoleKey.Home when _currentView == ViewState.SessionDetail:
+                _selectedChangeIndex = 0;
+                _changeScrollOffset = 0;
+                break;
+
+            case ConsoleKey.End when _currentView == ViewState.SessionDetail:
+                var endSession = _sessionManager.GetSession(_selectedSessionId!);
+                if (endSession != null && endSession.Changes.Count > 0)
+                {
+                    _selectedChangeIndex = endSession.Changes.Count - 1;
+                    _changeScrollOffset = Math.Max(0, endSession.Changes.Count - MaxVisibleChanges);
+                }
+                break;
+
+            case ConsoleKey.PageDown when _currentView == ViewState.SessionDetail:
+                var pgDnSession = _sessionManager.GetSession(_selectedSessionId!);
+                if (pgDnSession != null)
+                {
+                    _selectedChangeIndex = Math.Min(pgDnSession.Changes.Count - 1, _selectedChangeIndex + MaxVisibleChanges);
+                    _changeScrollOffset = Math.Min(
+                        Math.Max(0, pgDnSession.Changes.Count - MaxVisibleChanges),
+                        _changeScrollOffset + MaxVisibleChanges);
+                }
+                break;
+
+            case ConsoleKey.PageUp when _currentView == ViewState.SessionDetail:
+                _selectedChangeIndex = Math.Max(0, _selectedChangeIndex - MaxVisibleChanges);
+                _changeScrollOffset = Math.Max(0, _changeScrollOffset - MaxVisibleChanges);
+                break;
         }
     }
 
@@ -159,6 +200,11 @@ public class Dashboard
                 break;
             case ViewState.SessionDetail:
                 _selectedChangeIndex = Math.Max(0, _selectedChangeIndex - 1);
+                // Adjust scroll if selection moves above visible area
+                if (_selectedChangeIndex < _changeScrollOffset)
+                {
+                    _changeScrollOffset = _selectedChangeIndex;
+                }
                 break;
         }
     }
@@ -175,6 +221,11 @@ public class Dashboard
                 if (session != null)
                 {
                     _selectedChangeIndex = Math.Min(session.Changes.Count - 1, _selectedChangeIndex + 1);
+                    // Adjust scroll if selection moves below visible area
+                    if (_selectedChangeIndex >= _changeScrollOffset + MaxVisibleChanges)
+                    {
+                        _changeScrollOffset = _selectedChangeIndex - MaxVisibleChanges + 1;
+                    }
                 }
                 break;
         }
@@ -187,6 +238,7 @@ public class Dashboard
             case ViewState.SessionList when _selectedIndex < _sessions.Count:
                 _selectedSessionId = _sessions[_selectedIndex].Id;
                 _selectedChangeIndex = 0;
+                _changeScrollOffset = 0;
                 _currentView = ViewState.SessionDetail;
                 break;
             case ViewState.SessionDetail:
@@ -258,11 +310,12 @@ public class Dashboard
 
     private Panel RenderFooter()
     {
+        var sortLabel = _newestFirst ? "Newest" : "Oldest";
         var help = _currentView switch
         {
             ViewState.SessionList => "[dim]↑↓[/] Navigate  [dim]Enter[/] View Session  [dim]R[/] Refresh  [dim]Q[/] Quit",
-            ViewState.SessionDetail => "[dim]↑↓[/] Navigate  [dim]Enter[/] View Change  [dim]Esc[/] Back  [dim]Q[/] Quit",
-            ViewState.ChangeDetail => "[dim]Esc[/] Back  [dim]Q[/] Quit",
+            ViewState.SessionDetail => $"[dim]↑↓[/] Navigate  [dim]PgUp/PgDn[/] Page  [dim]Home/End[/] Jump  [dim]S[/] Sort: {sortLabel}  [dim]Enter[/] View  [dim]Esc[/] Back  [dim]Q[/] Quit",
+            ViewState.ChangeDetail => "[dim]Esc[/] Back to Actions  [dim]Q[/] Quit",
             _ => ""
         };
 
@@ -333,13 +386,26 @@ public class Dashboard
                 .Border(BoxBorder.Rounded);
         }
 
+        // Sort changes based on sort order
+        var sortedChanges = _newestFirst
+            ? session.Changes.OrderByDescending(c => c.StartTime).ToList()
+            : session.Changes.OrderBy(c => c.StartTime).ToList();
+
+        var totalChanges = sortedChanges.Count;
+        var sortLabel = _newestFirst ? "newest first" : "oldest first";
+
+        // Build scroll indicator (escape brackets for Spectre markup)
+        var scrollInfo = totalChanges > MaxVisibleChanges
+            ? $" [[{_changeScrollOffset + 1}-{Math.Min(_changeScrollOffset + MaxVisibleChanges, totalChanges)} of {totalChanges}]]"
+            : "";
+
         var content = new Rows(
             new Markup($"[bold]{Markup.Escape(session.ProjectName ?? "Unknown")}[/]"),
             new Markup($"[dim]Path:[/] {Markup.Escape(session.ProjectPath ?? "N/A")}"),
             new Markup($"[dim]Duration:[/] {FormatDuration(session.Duration)}  |  " +
                       $"[dim]Messages:[/] {session.UserMessageCount}↔{session.AssistantMessageCount}  |  " +
                       $"[dim]Tokens:[/] {session.TotalInputTokens:N0}/{session.TotalOutputTokens:N0}"),
-            new Rule("[dim]Changes[/]").RuleStyle("grey")
+            new Rule($"[dim]Actions ({sortLabel}){scrollInfo}[/]").RuleStyle("grey")
         );
 
         var changeTable = new Table()
@@ -347,14 +413,33 @@ public class Dashboard
             .BorderColor(Color.Grey)
             .AddColumn(new TableColumn("").Width(2))
             .AddColumn(new TableColumn("Type").Width(10))
-            .AddColumn(new TableColumn("Description").Width(50))
-            .AddColumn(new TableColumn("Files").Width(8))
-            .AddColumn(new TableColumn("Time").Width(15));
+            .AddColumn(new TableColumn("Description").Width(45))
+            .AddColumn(new TableColumn("Tools").Width(6))
+            .AddColumn(new TableColumn("Time").Width(10));
 
-        for (int i = 0; i < session.Changes.Count; i++)
+        // Show scroll-up indicator
+        if (_changeScrollOffset > 0)
         {
-            var change = session.Changes[i];
-            var isSelected = i == _selectedChangeIndex;
+            changeTable.AddRow(
+                new Markup(""),
+                new Markup("[dim]↑↑↑[/]"),
+                new Markup($"[dim]{_changeScrollOffset} more above[/]"),
+                new Markup(""),
+                new Markup("")
+            );
+        }
+
+        // Show only visible window of changes
+        var visibleChanges = sortedChanges
+            .Skip(_changeScrollOffset)
+            .Take(MaxVisibleChanges)
+            .ToList();
+
+        for (int i = 0; i < visibleChanges.Count; i++)
+        {
+            var actualIndex = _changeScrollOffset + i;
+            var change = visibleChanges[i];
+            var isSelected = actualIndex == _selectedChangeIndex;
             var prefix = isSelected ? "[bold yellow]>[/]" : " ";
             var highlight = isSelected ? "bold" : "dim";
 
@@ -371,23 +456,69 @@ public class Dashboard
                 new Markup(prefix),
                 new Markup($"[{typeColor}]{change.Type}[/]"),
                 new Markup($"[{highlight}]{Markup.Escape(change.Description)}[/]"),
-                new Markup($"[{highlight}]{change.AffectedFiles.Count}[/]"),
+                new Markup($"[{highlight}]{change.Tools.Count}[/]"),
                 new Markup($"[{highlight}]{change.StartTime.ToLocalTime():HH:mm:ss}[/]")
             );
         }
 
-        if (session.Changes.Count == 0)
+        // Show scroll-down indicator
+        var remainingBelow = totalChanges - _changeScrollOffset - MaxVisibleChanges;
+        if (remainingBelow > 0)
         {
             changeTable.AddRow(
                 new Markup(""),
-                new Markup("[dim]No changes[/]"),
+                new Markup("[dim]↓↓↓[/]"),
+                new Markup($"[dim]{remainingBelow} more below[/]"),
+                new Markup(""),
+                new Markup("")
+            );
+        }
+
+        if (totalChanges == 0)
+        {
+            changeTable.AddRow(
+                new Markup(""),
+                new Markup("[dim]No actions[/]"),
                 new Markup(""),
                 new Markup(""),
                 new Markup("")
             );
         }
 
-        var combined = new Rows(content, changeTable);
+        // Build .NET CLI section if there are any dotnet commands
+        IRenderable combined;
+        if (session.DotNetCliStats != null && session.DotNetCliStats.TotalCommands > 0)
+        {
+            var cliTable = new Table()
+                .Border(TableBorder.Simple)
+                .BorderColor(Color.Grey)
+                .AddColumn(new TableColumn("Command").Width(15))
+                .AddColumn(new TableColumn("Count").Width(8))
+                .AddColumn(new TableColumn("").Width(40));
+
+            foreach (var kvp in session.DotNetCliStats.CommandCounts
+                .OrderByDescending(x => x.Value)
+                .Take(8))
+            {
+                var bar = new string('█', Math.Min(kvp.Value, 30));
+                cliTable.AddRow(
+                    new Markup($"[cyan]dotnet {Markup.Escape(kvp.Key)}[/]"),
+                    new Markup($"[bold]{kvp.Value}[/]"),
+                    new Markup($"[blue]{bar}[/]")
+                );
+            }
+
+            combined = new Rows(
+                content,
+                changeTable,
+                new Rule($"[dim].NET CLI ({session.DotNetCliStats.TotalCommands} commands)[/]").RuleStyle("grey"),
+                cliTable
+            );
+        }
+        else
+        {
+            combined = new Rows(content, changeTable);
+        }
 
         return new Panel(combined)
             .Header($"[bold]Session Detail[/]")
@@ -400,11 +531,16 @@ public class Dashboard
         var session = _sessionManager.GetSession(_selectedSessionId!);
         if (session == null || _selectedChangeIndex >= session.Changes.Count)
         {
-            return new Panel(new Markup("[red]Change not found[/]"))
+            return new Panel(new Markup("[red]Action not found[/]"))
                 .Border(BoxBorder.Rounded);
         }
 
-        var change = session.Changes[_selectedChangeIndex];
+        // Use same sort order as session detail view
+        var sortedChanges = _newestFirst
+            ? session.Changes.OrderByDescending(c => c.StartTime).ToList()
+            : session.Changes.OrderBy(c => c.StartTime).ToList();
+
+        var change = sortedChanges[_selectedChangeIndex];
 
         var typeColor = change.Type switch
         {
@@ -418,8 +554,8 @@ public class Dashboard
         var header = new Rows(
             new Markup($"[bold]{Markup.Escape(change.Description)}[/]"),
             new Markup($"[{typeColor}]{change.Type}[/] | " +
-                      $"[dim]Duration:[/] {FormatDuration(change.Duration)} | " +
-                      $"[dim]Tools:[/] {change.Tools.Count}")
+                      $"[dim]Tools:[/] {change.Tools.Count} | " +
+                      $"[dim]Time:[/] {change.StartTime.ToLocalTime():HH:mm:ss}")
         );
 
         var toolTable = new Table()
@@ -459,7 +595,7 @@ public class Dashboard
         var combined = new Rows(header, new Rule().RuleStyle("grey"), toolTable, filesPanel);
 
         return new Panel(combined)
-            .Header("[bold]Change Detail[/]")
+            .Header("[bold]Action Detail[/]")
             .Border(BoxBorder.Rounded)
             .Expand();
     }

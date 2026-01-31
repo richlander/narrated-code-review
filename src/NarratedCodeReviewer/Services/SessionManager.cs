@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using NarratedCodeReviewer.Domain;
+using NarratedCodeReviewer.Parsing;
 using NarratedCodeReviewer.Providers;
 
 namespace NarratedCodeReviewer.Services;
@@ -107,6 +108,18 @@ public class SessionManager
             .Where(a => a.Usage != null)
             .Sum(a => a.Usage!.OutputTokens);
 
+        // Extract .NET CLI commands from Bash tool calls
+        var dotnetCommands = assistantMessages
+            .SelectMany(a => a.ToolUses
+                .Where(t => t.Name.Equals("Bash", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(t => DotNetCommandExtractor.ExtractAll(t.Command, a.Timestamp)))
+            .OrderBy(c => c.Timestamp)
+            .ToList();
+
+        var dotnetCliStats = dotnetCommands.Count > 0
+            ? DotNetCommandExtractor.Aggregate(dotnetCommands)
+            : null;
+
         var projectPath = entries.FirstOrDefault()?.ProjectPath;
         var projectName = projectPath != null
             ? Path.GetFileName(projectPath)
@@ -128,7 +141,9 @@ public class SessionManager
         )
         {
             TotalInputTokens = totalInput,
-            TotalOutputTokens = totalOutput
+            TotalOutputTokens = totalOutput,
+            DotNetCommands = dotnetCommands,
+            DotNetCliStats = dotnetCliStats
         };
     }
 

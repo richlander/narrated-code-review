@@ -23,6 +23,16 @@ public record Session(
     public int TotalOutputTokens { get; init; }
 
     /// <summary>
+    /// .NET CLI usage statistics for this session.
+    /// </summary>
+    public DotNetCliStats? DotNetCliStats { get; init; }
+
+    /// <summary>
+    /// Individual .NET CLI commands executed in this session.
+    /// </summary>
+    public IReadOnlyList<DotNetCommand> DotNetCommands { get; init; } = [];
+
+    /// <summary>
     /// Duration of the session.
     /// </summary>
     public TimeSpan Duration => LastActivityTime - StartTime;
