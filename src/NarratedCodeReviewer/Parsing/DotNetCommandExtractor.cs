@@ -40,6 +40,8 @@ public static partial class DotNetCommandExtractor
         // Look for dotnet commands - handle various patterns:
         // - "dotnet build"
         // - "dotnet run -- args"
+        // - "dotnet-inspect" (standalone dotnet tools)
+        // - "dotnet-trace collect"
         // - "cd /path && dotnet build"
         // - Multiple commands with &&, ||, or ;
 
@@ -48,8 +50,32 @@ public static partial class DotNetCommandExtractor
             return null;
 
         var fullDotnetCommand = match.Value.Trim();
+        // Remove leading separators if captured
+        fullDotnetCommand = fullDotnetCommand.TrimStart('&', '|', ';', ' ');
+
         var parts = fullDotnetCommand.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
+        if (parts.Length == 0)
+            return null;
+
+        var executable = parts[0].ToLowerInvariant();
+
+        // Remove .exe suffix if present
+        if (executable.EndsWith(".exe"))
+            executable = executable[..^4];
+
+        // Check if this is a dotnet-* tool (e.g., dotnet-inspect, dotnet-trace)
+        if (executable.StartsWith("dotnet-"))
+        {
+            return new DotNetCommand(
+                Command: executable,
+                FullCommand: fullDotnetCommand,
+                Arguments: parts.Length > 1 ? string.Join(' ', parts.Skip(1)) : null,
+                Timestamp: timestamp
+            );
+        }
+
+        // Standard "dotnet <subcommand>" pattern
         if (parts.Length < 2)
         {
             // Just "dotnet" with no subcommand
@@ -122,7 +148,8 @@ public static partial class DotNetCommandExtractor
     // Regex to match dotnet commands, handling:
     // - Start of string or after command separator (&&, ||, ;, |)
     // - Optional path prefix
-    // - The dotnet command with arguments until end or next separator
-    [GeneratedRegex(@"(?:^|&&|\|\||;|\|)\s*(?:[\w/\\.-]*)?dotnet(?:\.exe)?\s+[^&|;]+", RegexOptions.IgnoreCase)]
+    // - "dotnet <subcommand>" or "dotnet-<tool>" patterns
+    // - The command with arguments until end or next separator
+    [GeneratedRegex(@"(?:^|&&|\|\||;|\|)\s*(?:[\w/\\.-]*)?dotnet(?:-[\w]+)?(?:\.exe)?(?:\s+[^&|;]+|\s*$)", RegexOptions.IgnoreCase)]
     private static partial Regex DotNetCommandRegex();
 }

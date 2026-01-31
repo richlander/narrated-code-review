@@ -20,6 +20,7 @@ public class Dashboard
     private int _selectedChangeIndex;
     private int _changeScrollOffset;
     private bool _newestFirst = true;  // Default to newest first
+    private SessionTab _currentTab = SessionTab.Actions;  // Default to Actions (existing behavior)
     private bool _dataChanged = true;
     private bool _running = true;
 
@@ -32,6 +33,12 @@ public class Dashboard
         SessionList,
         SessionDetail,
         ChangeDetail
+    }
+
+    private enum SessionTab
+    {
+        Summary,
+        Actions
     }
 
     public Dashboard(SessionManager sessionManager, StatsAggregator statsAggregator, LogWatcher watcher)
@@ -188,6 +195,14 @@ public class Dashboard
                 _selectedChangeIndex = Math.Max(0, _selectedChangeIndex - MaxVisibleChanges);
                 _changeScrollOffset = Math.Max(0, _changeScrollOffset - MaxVisibleChanges);
                 break;
+
+            case ConsoleKey.LeftArrow when _currentView == ViewState.SessionDetail:
+            case ConsoleKey.RightArrow when _currentView == ViewState.SessionDetail:
+                // Cycle through tabs (wraps around)
+                var tabCount = Enum.GetValues<SessionTab>().Length;
+                var direction = key.Key == ConsoleKey.RightArrow ? 1 : -1;
+                _currentTab = (SessionTab)(((int)_currentTab + direction + tabCount) % tabCount);
+                break;
         }
     }
 
@@ -239,9 +254,11 @@ public class Dashboard
                 _selectedSessionId = _sessions[_selectedIndex].Id;
                 _selectedChangeIndex = 0;
                 _changeScrollOffset = 0;
+                _currentTab = SessionTab.Actions;  // Default to Actions when entering session
                 _currentView = ViewState.SessionDetail;
                 break;
-            case ViewState.SessionDetail:
+            case ViewState.SessionDetail when _currentTab == SessionTab.Actions:
+                // Only allow drill-down from Actions tab
                 var session = _sessionManager.GetSession(_selectedSessionId!);
                 if (session != null && _selectedChangeIndex < session.Changes.Count)
                 {
@@ -284,7 +301,9 @@ public class Dashboard
                 layout["Main"].Update(RenderSessionList());
                 break;
             case ViewState.SessionDetail:
-                layout["Main"].Update(RenderSessionDetail());
+                layout["Main"].Update(_currentTab == SessionTab.Summary
+                    ? RenderSessionSummary()
+                    : RenderSessionActions());
                 break;
             case ViewState.ChangeDetail:
                 layout["Main"].Update(RenderChangeDetail());
@@ -314,7 +333,10 @@ public class Dashboard
         var help = _currentView switch
         {
             ViewState.SessionList => "[dim]↑↓[/] Navigate  [dim]Enter[/] View Session  [dim]R[/] Refresh  [dim]Q[/] Quit",
-            ViewState.SessionDetail => $"[dim]↑↓[/] Navigate  [dim]PgUp/PgDn[/] Page  [dim]Home/End[/] Jump  [dim]S[/] Sort: {sortLabel}  [dim]Enter[/] View  [dim]Esc[/] Back  [dim]Q[/] Quit",
+            ViewState.SessionDetail when _currentTab == SessionTab.Summary =>
+                "[dim]←→[/] Switch Tab  [dim]Esc[/] Back  [dim]Q[/] Quit",
+            ViewState.SessionDetail =>
+                $"[dim]←→[/] Switch Tab  [dim]↑↓[/] Navigate  [dim]PgUp/PgDn[/] Page  [dim]S[/] Sort: {sortLabel}  [dim]Enter[/] View  [dim]Esc[/] Back  [dim]Q[/] Quit",
             ViewState.ChangeDetail => "[dim]Esc[/] Back to Actions  [dim]Q[/] Quit",
             _ => ""
         };
@@ -377,7 +399,7 @@ public class Dashboard
             .Expand();
     }
 
-    private Panel RenderSessionDetail()
+    private Panel RenderSessionActions()
     {
         var session = _sessionManager.GetSession(_selectedSessionId!);
         if (session == null)
@@ -501,8 +523,12 @@ public class Dashboard
                 .Take(8))
             {
                 var bar = new string('█', Math.Min(kvp.Value, 30));
+                // dotnet-* tools show as-is, regular subcommands show as "dotnet <cmd>"
+                var displayName = kvp.Key.StartsWith("dotnet-", StringComparison.OrdinalIgnoreCase)
+                    ? kvp.Key
+                    : $"dotnet {kvp.Key}";
                 cliTable.AddRow(
-                    new Markup($"[cyan]dotnet {Markup.Escape(kvp.Key)}[/]"),
+                    new Markup($"[cyan]{Markup.Escape(displayName)}[/]"),
                     new Markup($"[bold]{kvp.Value}[/]"),
                     new Markup($"[blue]{bar}[/]")
                 );
@@ -521,7 +547,128 @@ public class Dashboard
         }
 
         return new Panel(combined)
-            .Header($"[bold]Session Detail[/]")
+            .Header($"[bold]Session[/] [dim]Summary[/]  [bold cyan]Actions[/]")
+            .Border(BoxBorder.Rounded)
+            .Expand();
+    }
+
+    private Panel RenderSessionSummary()
+    {
+        var session = _sessionManager.GetSession(_selectedSessionId!);
+        if (session == null)
+        {
+            return new Panel(new Markup("[red]Session not found[/]"))
+                .Border(BoxBorder.Rounded);
+        }
+
+        // Aggregate tool operations by name
+        var toolCounts = session.Changes
+            .SelectMany(c => c.Tools)
+            .GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        var totalTools = toolCounts.Values.Sum();
+
+        // Build Claude Operations table
+        var claudeTable = new Table()
+            .Border(TableBorder.Simple)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("Operation").Width(18))
+            .AddColumn(new TableColumn("Count").RightAligned().Width(8));
+
+        // Sort all tools by count descending
+        foreach (var kvp in toolCounts.OrderByDescending(x => x.Value))
+        {
+            var color = kvp.Key.ToLowerInvariant() switch
+            {
+                "read" => "blue",
+                "edit" => "yellow",
+                "write" => "green",
+                "bash" => "cyan",
+                "webfetch" => "magenta",
+                "grep" or "glob" => "white",
+                "task" => "green",
+                _ => "dim"
+            };
+            claudeTable.AddRow(
+                new Markup($"[{color}]{kvp.Key}[/]"),
+                new Markup($"[bold]{kvp.Value}[/]")
+            );
+        }
+
+        claudeTable.AddEmptyRow();
+        claudeTable.AddRow(
+            new Markup("[dim]Total[/]"),
+            new Markup($"[bold]{totalTools}[/]")
+        );
+
+        // Build DotNet Operations table
+        var dotnetTable = new Table()
+            .Border(TableBorder.Simple)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("Command").Width(18))
+            .AddColumn(new TableColumn("Count").RightAligned().Width(8));
+
+        if (session.DotNetCliStats != null && session.DotNetCliStats.TotalCommands > 0)
+        {
+            foreach (var kvp in session.DotNetCliStats.CommandCounts.OrderByDescending(x => x.Value))
+            {
+                // dotnet-* tools show as-is, regular subcommands show as "dotnet <cmd>"
+                var displayName = kvp.Key.StartsWith("dotnet-", StringComparison.OrdinalIgnoreCase)
+                    ? kvp.Key
+                    : $"dotnet {kvp.Key}";
+                dotnetTable.AddRow(
+                    new Markup($"[cyan]{Markup.Escape(displayName)}[/]"),
+                    new Markup($"[bold]{kvp.Value}[/]")
+                );
+            }
+
+            dotnetTable.AddEmptyRow();
+            dotnetTable.AddRow(
+                new Markup("[dim]Total[/]"),
+                new Markup($"[bold]{session.DotNetCliStats.TotalCommands}[/]")
+            );
+        }
+        else
+        {
+            dotnetTable.AddRow(
+                new Markup("[dim]No dotnet commands[/]"),
+                new Markup("")
+            );
+        }
+
+        // Session header info
+        var header = new Rows(
+            new Markup($"[bold]{Markup.Escape(session.ProjectName ?? "Unknown")}[/]"),
+            new Markup($"[dim]Path:[/] {Markup.Escape(session.ProjectPath ?? "N/A")}"),
+            new Markup($"[dim]Duration:[/] {FormatDuration(session.Duration)}  |  " +
+                      $"[dim]Messages:[/] {session.UserMessageCount}↔{session.AssistantMessageCount}  |  " +
+                      $"[dim]Tokens:[/] {session.TotalInputTokens:N0}/{session.TotalOutputTokens:N0}"),
+            Text.Empty
+        );
+
+        // Two-column layout for operations
+        var columnsTable = new Table()
+            .Border(TableBorder.None)
+            .HideHeaders()
+            .AddColumn(new TableColumn("").Width(55))
+            .AddColumn(new TableColumn("").Width(55));
+
+        columnsTable.AddRow(
+            new Rows(
+                new Rule("[dim]Claude Operations[/]").RuleStyle("grey").LeftJustified(),
+                claudeTable
+            ),
+            new Rows(
+                new Rule("[dim]DotNet Operations[/]").RuleStyle("grey").LeftJustified(),
+                dotnetTable
+            )
+        );
+
+        var combined = new Rows(header, columnsTable);
+
+        return new Panel(combined)
+            .Header($"[bold]Session[/] [bold cyan]Summary[/]  [dim]Actions[/]")
             .Border(BoxBorder.Rounded)
             .Expand();
     }
