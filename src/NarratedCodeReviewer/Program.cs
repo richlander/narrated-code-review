@@ -1,8 +1,8 @@
+using Microsoft.Extensions.Terminal;
 using NarratedCodeReviewer.Domain;
 using NarratedCodeReviewer.Providers;
 using NarratedCodeReviewer.Services;
 using NarratedCodeReviewer.UI;
-using Spectre.Console;
 
 if (args.Contains("--help") || args.Contains("-h"))
 {
@@ -32,12 +32,22 @@ ILogProvider provider = customPath != null
     ? new ClaudeCodeProvider(customPath)
     : new ClaudeCodeProvider();
 
+// Create terminal
+var console = new SystemConsole();
+var terminal = new AnsiTerminal(console);
+
 // Check if base path exists
 if (!Directory.Exists(provider.BasePath))
 {
-    AnsiConsole.MarkupLine($"[yellow]Warning:[/] Claude Code logs directory not found at [dim]{provider.BasePath}[/]");
-    AnsiConsole.MarkupLine("[dim]The dashboard will start but no sessions will be displayed until Claude Code creates logs.[/]");
-    AnsiConsole.WriteLine();
+    terminal.SetColor(TerminalColor.Yellow);
+    terminal.Append("Warning: ");
+    terminal.ResetColor();
+    terminal.Append($"Claude Code logs directory not found at ");
+    terminal.SetColor(TerminalColor.Gray);
+    terminal.AppendLine(provider.BasePath);
+    terminal.ResetColor();
+    terminal.AppendLine("The dashboard will start but no sessions will be displayed until Claude Code creates logs.");
+    terminal.AppendLine();
 }
 
 // Create services
@@ -46,32 +56,31 @@ var statsAggregator = new StatsAggregator();
 var watcher = new LogWatcher(provider, sessionManager);
 
 // Load existing data
-AnsiConsole.Status()
-    .Spinner(Spinner.Known.Dots)
-    .Start("Loading sessions...", ctx =>
-    {
-        sessionManager.LoadFromProviderAsync(provider).GetAwaiter().GetResult();
-    });
+terminal.Append("Loading sessions...");
+await sessionManager.LoadFromProviderAsync(provider);
+terminal.AppendLine(" done");
 
 var sessions = sessionManager.GetAllSessions();
-AnsiConsole.MarkupLine($"[green]Loaded {sessions.Count} sessions[/]");
+terminal.SetColor(TerminalColor.Green);
+terminal.AppendLine($"Loaded {sessions.Count} sessions");
+terminal.ResetColor();
 
 if (args.Contains("--list") || args.Contains("-l"))
 {
     // List mode - just show sessions and exit
-    ShowSessionList(sessions);
+    ShowSessionList(sessions, terminal);
     return 0;
 }
 
 if (args.Contains("--stats") || args.Contains("-s"))
 {
     // Stats mode - show statistics and exit
-    ShowStats(statsAggregator.ComputeStats(sessions), statsAggregator.ComputeDailyStats(sessions));
+    ShowStats(statsAggregator.ComputeStats(sessions), statsAggregator.ComputeDailyStats(sessions), terminal);
     return 0;
 }
 
 // Interactive dashboard mode
-var dashboard = new Dashboard(sessionManager, statsAggregator, watcher);
+var dashboard = new Dashboard(sessionManager, statsAggregator, watcher, terminal);
 await dashboard.RunAsync();
 
 return 0;
@@ -79,128 +88,116 @@ return 0;
 // Helper methods
 void ShowHelp()
 {
-    AnsiConsole.Write(new FigletText("NCR").Color(Color.Blue));
-    AnsiConsole.MarkupLine("[bold]Narrated Code Reviewer[/] - Terminal dashboard for Claude Code sessions\n");
-
-    var table = new Table()
-        .Border(TableBorder.Rounded)
-        .AddColumn("Option")
-        .AddColumn("Description");
-
-    table.AddRow("[cyan]-h, --help[/]", "Show this help message");
-    table.AddRow("[cyan]-v, --version[/]", "Show version information");
-    table.AddRow("[cyan]-p, --path <path>[/]", "Custom path to Claude logs directory");
-    table.AddRow("[cyan]-l, --list[/]", "List sessions and exit (non-interactive)");
-    table.AddRow("[cyan]-s, --stats[/]", "Show statistics and exit (non-interactive)");
-
-    AnsiConsole.Write(table);
-
-    AnsiConsole.WriteLine();
-    AnsiConsole.MarkupLine("[bold]Keyboard Controls (Interactive Mode):[/]");
-
-    var controls = new Table()
-        .Border(TableBorder.Simple)
-        .AddColumn("Key")
-        .AddColumn("Action");
-
-    controls.AddRow("[cyan]↑/↓ or j/k[/]", "Navigate up/down");
-    controls.AddRow("[cyan]Enter[/]", "View selected item");
-    controls.AddRow("[cyan]Esc/Backspace[/]", "Go back");
-    controls.AddRow("[cyan]r[/]", "Refresh data");
-    controls.AddRow("[cyan]q[/]", "Quit");
-
-    AnsiConsole.Write(controls);
+    Console.WriteLine();
+    Console.WriteLine("  ╔═╗╔═╗╦═╗");
+    Console.WriteLine("  ║  ║  ╠╦╝  Narrated Code Reviewer");
+    Console.WriteLine("  ╚═╝╚═╝╩╚═");
+    Console.WriteLine();
+    Console.WriteLine("Terminal dashboard for Claude Code sessions");
+    Console.WriteLine();
+    Console.WriteLine("Options:");
+    Console.WriteLine("  -h, --help           Show this help message");
+    Console.WriteLine("  -v, --version        Show version information");
+    Console.WriteLine("  -p, --path <path>    Custom path to Claude logs directory");
+    Console.WriteLine("  -l, --list           List sessions and exit (non-interactive)");
+    Console.WriteLine("  -s, --stats          Show statistics and exit (non-interactive)");
+    Console.WriteLine();
+    Console.WriteLine("Keyboard Controls (Interactive Mode):");
+    Console.WriteLine("  ↑/↓ or j/k           Navigate up/down");
+    Console.WriteLine("  ←/→                  Switch tabs");
+    Console.WriteLine("  Enter                View selected item");
+    Console.WriteLine("  Esc/Backspace        Go back");
+    Console.WriteLine("  r                    Refresh data");
+    Console.WriteLine("  s                    Toggle sort order");
+    Console.WriteLine("  q                    Quit");
+    Console.WriteLine();
 }
 
-void ShowSessionList(IReadOnlyList<Session> sessionList)
+void ShowSessionList(IReadOnlyList<Session> sessionList, ITerminal term)
 {
-    var table = new Table()
-        .Border(TableBorder.Rounded)
-        .Title("[bold]Recent Sessions[/]")
-        .AddColumn("Project")
-        .AddColumn("Status")
-        .AddColumn("Messages")
-        .AddColumn("Tools")
-        .AddColumn("Changes")
-        .AddColumn("Last Activity");
+    term.AppendLine();
+    term.SetColor(TerminalColor.White);
+    term.AppendLine("Recent Sessions");
+    term.SetColor(TerminalColor.Gray);
+    term.AppendLine(new string('─', 80));
+    term.ResetColor();
+
+    term.AppendLine($"{"Project",-25} {"Status",-10} {"Messages",-12} {"Tools",-8} {"Changes",-8} {"Last Activity",-15}");
+    term.SetColor(TerminalColor.Gray);
+    term.AppendLine(new string('─', 80));
+    term.ResetColor();
 
     foreach (var session in sessionList.Take(20))
     {
-        var status = session.IsActive ? "[green]Active[/]" : "[grey]Idle[/]";
+        var status = session.IsActive ? "Active" : "Idle";
+        var statusColor = session.IsActive ? TerminalColor.Green : TerminalColor.Gray;
         var timeAgo = FormatTimeAgo(session.LastActivityTime);
 
-        table.AddRow(
-            $"[bold]{Markup.Escape(session.ProjectName ?? "Unknown")}[/]",
-            status,
-            $"{session.UserMessageCount}↔{session.AssistantMessageCount}",
-            session.ToolCallCount.ToString(),
-            session.Changes.Count.ToString(),
-            timeAgo
-        );
+        term.Append($"{Truncate(session.ProjectName ?? "Unknown", 25),-25} ");
+        term.SetColor(statusColor);
+        term.Append($"{status,-10} ");
+        term.ResetColor();
+        term.AppendLine($"{session.UserMessageCount}↔{session.AssistantMessageCount,-7} {session.ToolCallCount,-8} {session.Changes.Count,-8} {timeAgo,-15}");
     }
 
-    AnsiConsole.Write(table);
+    term.AppendLine();
 }
 
-void ShowStats(Stats stats, IReadOnlyList<DailyStats> daily)
+void ShowStats(Stats stats, IReadOnlyList<DailyStats> daily, ITerminal term)
 {
-    AnsiConsole.Write(new Rule("[bold]Overall Statistics[/]").RuleStyle("blue"));
+    term.AppendLine();
+    term.SetColor(TerminalColor.Blue);
+    term.AppendLine("─── Overall Statistics ───");
+    term.ResetColor();
+    term.AppendLine();
 
-    var overview = new Table()
-        .Border(TableBorder.Rounded)
-        .AddColumn("Metric")
-        .AddColumn("Value");
-
-    overview.AddRow("Total Sessions", stats.TotalSessions.ToString("N0"));
-    overview.AddRow("Active Sessions", stats.ActiveSessions.ToString("N0"));
-    overview.AddRow("User Messages", stats.TotalUserMessages.ToString("N0"));
-    overview.AddRow("Assistant Messages", stats.TotalAssistantMessages.ToString("N0"));
-    overview.AddRow("Tool Calls", stats.TotalToolCalls.ToString("N0"));
-    overview.AddRow("Input Tokens", stats.TotalInputTokens.ToString("N0"));
-    overview.AddRow("Output Tokens", stats.TotalOutputTokens.ToString("N0"));
-
-    AnsiConsole.Write(overview);
+    term.AppendLine($"  Total Sessions:      {stats.TotalSessions:N0}");
+    term.AppendLine($"  Active Sessions:     {stats.ActiveSessions:N0}");
+    term.AppendLine($"  User Messages:       {stats.TotalUserMessages:N0}");
+    term.AppendLine($"  Assistant Messages:  {stats.TotalAssistantMessages:N0}");
+    term.AppendLine($"  Tool Calls:          {stats.TotalToolCalls:N0}");
+    term.AppendLine($"  Input Tokens:        {stats.TotalInputTokens:N0}");
+    term.AppendLine($"  Output Tokens:       {stats.TotalOutputTokens:N0}");
 
     if (stats.ToolUsageCounts.Count > 0)
     {
-        AnsiConsole.WriteLine();
-        AnsiConsole.Write(new Rule("[bold]Tool Usage[/]").RuleStyle("blue"));
+        term.AppendLine();
+        term.SetColor(TerminalColor.Blue);
+        term.AppendLine("─── Tool Usage ───");
+        term.ResetColor();
+        term.AppendLine();
 
-        var toolChart = new BarChart()
-            .Width(60)
-            .Label("[green bold]Top Tools[/]");
-
+        var maxCount = stats.ToolUsageCounts.Values.Max();
         foreach (var kvp in stats.ToolUsageCounts.OrderByDescending(x => x.Value).Take(10))
         {
-            toolChart.AddItem(kvp.Key, kvp.Value, Color.Cyan1);
+            var barLength = (int)(40.0 * kvp.Value / maxCount);
+            var bar = new string('█', barLength);
+            term.Append($"  {kvp.Key,-15} ");
+            term.SetColor(TerminalColor.Cyan);
+            term.Append(bar);
+            term.ResetColor();
+            term.AppendLine($" {kvp.Value}");
         }
-
-        AnsiConsole.Write(toolChart);
     }
 
-    AnsiConsole.WriteLine();
-    AnsiConsole.Write(new Rule("[bold]Daily Activity (Last 7 Days)[/]").RuleStyle("blue"));
+    term.AppendLine();
+    term.SetColor(TerminalColor.Blue);
+    term.AppendLine("─── Daily Activity (Last 7 Days) ───");
+    term.ResetColor();
+    term.AppendLine();
 
-    var dailyTable = new Table()
-        .Border(TableBorder.Rounded)
-        .AddColumn("Date")
-        .AddColumn("Sessions")
-        .AddColumn("Messages")
-        .AddColumn("Tools")
-        .AddColumn("Tokens");
+    term.AppendLine($"  {"Date",-12} {"Sessions",-10} {"Messages",-12} {"Tools",-10} {"Tokens",-20}");
+    term.SetColor(TerminalColor.Gray);
+    term.AppendLine($"  {new string('─', 70)}");
+    term.ResetColor();
 
     foreach (var day in daily)
     {
-        dailyTable.AddRow(
-            day.Date.ToString("ddd MM/dd"),
-            day.SessionCount.ToString(),
-            $"{day.UserMessages}↔{day.AssistantMessages}",
-            day.ToolCalls.ToString("N0"),
-            $"{day.InputTokens:N0}/{day.OutputTokens:N0}"
-        );
+        var dateStr = day.Date.ToString("ddd MM/dd");
+        term.AppendLine($"  {dateStr,-12} {day.SessionCount,-10} {day.UserMessages}↔{day.AssistantMessages,-7} {day.ToolCalls,-10:N0} {day.InputTokens:N0}/{day.OutputTokens:N0}");
     }
 
-    AnsiConsole.Write(dailyTable);
+    term.AppendLine();
 }
 
 string FormatTimeAgo(DateTime time)
@@ -213,4 +210,10 @@ string FormatTimeAgo(DateTime time)
         < 1440 => $"{(int)diff.TotalHours}h ago",
         _ => $"{(int)diff.TotalDays}d ago"
     };
+}
+
+string Truncate(string text, int maxLength)
+{
+    if (string.IsNullOrEmpty(text)) return "";
+    return text.Length <= maxLength ? text : text[..(maxLength - 3)] + "...";
 }
