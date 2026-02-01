@@ -249,6 +249,12 @@ public class Dashboard
                     _selectedSessionIndex = Math.Max(0, _selectedSessionIndex - 1);
                     return true;
                 }
+                if (_viewStack.Current == _detailPanel && _selectedChangeIndex > 0)
+                {
+                    _selectedChangeIndex--;
+                    _app.Buffer.Invalidate();
+                    return true;
+                }
                 break;
 
             case ConsoleKey.DownArrow:
@@ -257,6 +263,16 @@ public class Dashboard
                 {
                     _selectedSessionIndex = Math.Min(_sessions.Count - 1, _selectedSessionIndex + 1);
                     return true;
+                }
+                if (_viewStack.Current == _detailPanel)
+                {
+                    var detailSession = _sessionManager.GetSession(_selectedSessionId!);
+                    if (detailSession != null && _selectedChangeIndex < detailSession.Changes.Count - 1)
+                    {
+                        _selectedChangeIndex++;
+                        _app.Buffer.Invalidate();
+                        return true;
+                    }
                 }
                 break;
 
@@ -373,9 +389,8 @@ public class Dashboard
     private void UpdateUI()
     {
         UpdateHeader();
-        UpdateFooter();
 
-        // Update current view content and panel content
+        // Update current view content and panel content (before footer, as content may set state used by footer)
         if (_viewStack.Current == _sessionTable)
         {
             UpdateSessionList();
@@ -407,6 +422,8 @@ public class Dashboard
             _mainPanel.Header = "Full Content";
             _mainPanel.Content = _diffPanel;
         }
+
+        UpdateFooter();
     }
 
     private void UpdateHeader()
@@ -458,6 +475,8 @@ public class Dashboard
         }
         else if (_viewStack.Current == _detailPanel)
         {
+            _footerText
+                .Append("↑↓", TerminalColor.Gray).Append(" Prev/Next  ");
             if (_hasMoreContent)
             {
                 _footerText
