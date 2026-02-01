@@ -41,6 +41,7 @@ public record ToolUse(
     string Name,
     string? FilePath,
     string? Content,
+    string? OldContent,
     string? Command
 );
 

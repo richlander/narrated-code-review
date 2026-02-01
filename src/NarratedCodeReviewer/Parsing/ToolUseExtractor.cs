@@ -19,12 +19,14 @@ public static class ToolUseExtractor
         var input = ParseToolInput(block.Input);
         var filePath = ExtractFilePath(block.Name, input);
         var content = ExtractContent(block.Name, input);
+        var oldContent = ExtractOldContent(block.Name, input);
         var command = ExtractCommand(block.Name, input);
 
         return new ToolUse(
             Name: block.Name,
             FilePath: filePath,
             Content: content,
+            OldContent: oldContent,
             Command: command
         );
     }
@@ -64,6 +66,17 @@ public static class ToolUseExtractor
         {
             "write" => input.Content,
             "edit" => input.NewString,
+            _ => null
+        };
+    }
+
+    private static string? ExtractOldContent(string toolName, RawToolInput? input)
+    {
+        if (input == null) return null;
+
+        return toolName.ToLowerInvariant() switch
+        {
+            "edit" => input.OldString,
             _ => null
         };
     }

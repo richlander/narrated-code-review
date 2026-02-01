@@ -39,6 +39,8 @@ public class Dashboard
     private readonly Text _detailText;
     private readonly Text _detailHeader;
     private readonly Panel _detailPanel;
+    private readonly Text _diffText;
+    private readonly Panel _diffPanel;
     private readonly Layout _actionsLayout;
 
     public Dashboard(SessionManager sessionManager, StatsAggregator statsAggregator, LogWatcher watcher, ITerminal terminal)
@@ -121,6 +123,14 @@ public class Dashboard
         _detailPanel = new Panel
         {
             Content = _detailText,
+            Border = BoxBorderStyle.None
+        };
+
+        // Diff panel for code view
+        _diffText = new Text();
+        _diffPanel = new Panel
+        {
+            Content = _diffText,
             Border = BoxBorderStyle.None
         };
 
@@ -273,6 +283,16 @@ public class Dashboard
                     return true;
                 }
                 break;
+
+            case ConsoleKey.F when _viewStack.Current == _detailPanel:
+                // Show full content view if there's expandable content
+                if (_hasMoreContent)
+                {
+                    _viewStack.Push(_diffPanel);
+                    _app.Buffer.Invalidate();
+                    return true;
+                }
+                break;
         }
 
         return false;
@@ -343,6 +363,13 @@ public class Dashboard
         return false;
     }
 
+    private IReadOnlyList<LogicalChange> GetSortedChanges(Session session)
+    {
+        return _newestFirst
+            ? session.Changes.OrderByDescending(c => c.StartTime).ToList()
+            : session.Changes.OrderBy(c => c.StartTime).ToList();
+    }
+
     private void UpdateUI()
     {
         UpdateHeader();
@@ -373,6 +400,12 @@ public class Dashboard
             UpdateChangeDetail();
             _mainPanel.Header = "Action Detail";
             _mainPanel.Content = _detailPanel;
+        }
+        else if (_viewStack.Current == _diffPanel)
+        {
+            UpdateFullContentView();
+            _mainPanel.Header = "Full Content";
+            _mainPanel.Content = _diffPanel;
         }
     }
 
@@ -424,6 +457,17 @@ public class Dashboard
             }
         }
         else if (_viewStack.Current == _detailPanel)
+        {
+            if (_hasMoreContent)
+            {
+                _footerText
+                    .Append("F", TerminalColor.Gray).Append(" Full View  ");
+            }
+            _footerText
+                .Append("Esc", TerminalColor.Gray).Append(" Back  ")
+                .Append("Q", TerminalColor.Gray).Append(" Quit");
+        }
+        else if (_viewStack.Current == _diffPanel)
         {
             _footerText
                 .Append("Esc", TerminalColor.Gray).Append(" Back  ")
@@ -567,11 +611,7 @@ public class Dashboard
             return;
         }
 
-        var sortedChanges = _newestFirst
-            ? session.Changes.OrderByDescending(c => c.StartTime).ToList()
-            : session.Changes.OrderBy(c => c.StartTime).ToList();
-
-        var change = sortedChanges[_selectedChangeIndex];
+        var change = GetSortedChanges(session)[_selectedChangeIndex];
         var typeColor = change.Type switch
         {
             ChangeType.Write => TerminalColor.Green,
@@ -586,26 +626,182 @@ public class Dashboard
             .AppendLine(change.Description, TerminalColor.White)
             .Append(change.Type.ToString(), typeColor)
             .Append(" | Tools: ", TerminalColor.Gray).Append($"{change.Tools.Count}")
-            .Append(" | Time: ", TerminalColor.Gray).AppendLine(change.StartTime.ToLocalTime().ToString("HH:mm:ss"))
-            .AppendLine()
-            .AppendLine("─── Tools ───", TerminalColor.Gray);
+            .Append(" | Time: ", TerminalColor.Gray).AppendLine(change.StartTime.ToLocalTime().ToString("HH:mm:ss"));
 
+        // Show inline tool details
         foreach (var tool in change.Tools)
         {
-            var target = tool.FilePath ?? tool.Command ?? "-";
-            _detailText.Append($"  {tool.Name,-10}", TerminalColor.Cyan)
-                .AppendLine($" {Truncate(target, 50)}", TerminalColor.Gray);
+            _detailText.AppendLine()
+                .Append($"─── {tool.Name} ", TerminalColor.Cyan);
+
+            var target = tool.FilePath ?? tool.Command ?? "";
+            if (!string.IsNullOrEmpty(target))
+            {
+                var fileName = tool.FilePath != null ? Path.GetFileName(tool.FilePath) : target;
+                _detailText.Append($"({fileName})", TerminalColor.Gray);
+            }
+            _detailText.AppendLine(" ───", TerminalColor.Cyan);
+
+            // Show tool-specific content inline
+            RenderToolContent(_detailText, tool, maxLines: 8);
         }
 
-        if (change.AffectedFiles.Count > 0)
+        _hasMoreContent = change.Tools.Any(t => HasExpandableContent(t));
+    }
+
+    private bool _hasMoreContent;
+
+    private void RenderToolContent(Text text, ToolUse tool, int maxLines)
+    {
+        var toolName = tool.Name.ToLowerInvariant();
+
+        switch (toolName)
         {
-            _detailText.AppendLine()
-                .AppendLine("─── Affected Files ───", TerminalColor.Gray);
-            foreach (var file in change.AffectedFiles)
-            {
-                _detailText.AppendLine($"  • {file}", TerminalColor.Gray);
-            }
+            case "edit":
+                if (!string.IsNullOrEmpty(tool.OldContent) || !string.IsNullOrEmpty(tool.Content))
+                {
+                    var oldLines = (tool.OldContent ?? "").Split('\n');
+                    var newLines = (tool.Content ?? "").Split('\n');
+                    var totalLines = oldLines.Length + newLines.Length;
+                    var shown = 0;
+
+                    foreach (var line in oldLines.Take(maxLines / 2))
+                    {
+                        text.Append("- ", TerminalColor.Red)
+                            .AppendLine(TruncateLine(line, 70), TerminalColor.Red);
+                        shown++;
+                    }
+                    foreach (var line in newLines.Take(maxLines / 2))
+                    {
+                        text.Append("+ ", TerminalColor.Green)
+                            .AppendLine(TruncateLine(line, 70), TerminalColor.Green);
+                        shown++;
+                    }
+                    if (totalLines > shown)
+                    {
+                        text.AppendLine($"  ... ({totalLines - shown} more lines, press F for full view)", TerminalColor.Gray);
+                    }
+                }
+                break;
+
+            case "write":
+                if (!string.IsNullOrEmpty(tool.Content))
+                {
+                    var lines = tool.Content.Split('\n');
+                    text.AppendLine("[NEW FILE]", TerminalColor.Green);
+                    for (int i = 0; i < Math.Min(lines.Length, maxLines); i++)
+                    {
+                        text.Append($"{i + 1,3} ", TerminalColor.Gray)
+                            .AppendLine(TruncateLine(lines[i], 70), TerminalColor.White);
+                    }
+                    if (lines.Length > maxLines)
+                    {
+                        text.AppendLine($"    ... ({lines.Length - maxLines} more lines, press F for full view)", TerminalColor.Gray);
+                    }
+                }
+                break;
+
+            case "bash":
+                if (!string.IsNullOrEmpty(tool.Command))
+                {
+                    text.Append("$ ", TerminalColor.Green)
+                        .AppendLine(tool.Command, TerminalColor.White);
+                }
+                break;
+
+            case "grep":
+            case "glob":
+                if (!string.IsNullOrEmpty(tool.Command)) // Pattern stored in Command
+                {
+                    text.Append("Pattern: ", TerminalColor.Gray)
+                        .AppendLine(tool.Command, TerminalColor.Yellow);
+                }
+                if (!string.IsNullOrEmpty(tool.FilePath))
+                {
+                    text.Append("Path: ", TerminalColor.Gray)
+                        .AppendLine(tool.FilePath, TerminalColor.White);
+                }
+                break;
+
+            case "read":
+                if (!string.IsNullOrEmpty(tool.FilePath))
+                {
+                    text.Append("Reading: ", TerminalColor.Gray)
+                        .AppendLine(tool.FilePath, TerminalColor.White);
+                }
+                break;
+
+            default:
+                if (!string.IsNullOrEmpty(tool.FilePath))
+                {
+                    text.Append("Path: ", TerminalColor.Gray)
+                        .AppendLine(tool.FilePath, TerminalColor.White);
+                }
+                if (!string.IsNullOrEmpty(tool.Command))
+                {
+                    text.Append("Command: ", TerminalColor.Gray)
+                        .AppendLine(tool.Command, TerminalColor.White);
+                }
+                break;
         }
+    }
+
+    private static bool HasExpandableContent(ToolUse tool)
+    {
+        var toolName = tool.Name.ToLowerInvariant();
+        return toolName switch
+        {
+            "edit" => (tool.OldContent?.Split('\n').Length ?? 0) + (tool.Content?.Split('\n').Length ?? 0) > 8,
+            "write" => (tool.Content?.Split('\n').Length ?? 0) > 8,
+            _ => false
+        };
+    }
+
+    private void UpdateFullContentView()
+    {
+        var session = _sessionManager.GetSession(_selectedSessionId!);
+        if (session == null || _selectedChangeIndex >= session.Changes.Count)
+        {
+            return;
+        }
+
+        var change = GetSortedChanges(session)[_selectedChangeIndex];
+
+        _diffText.Clear();
+
+        // Show change context
+        _diffText
+            .AppendLine(change.Description, TerminalColor.White)
+            .Append(change.Type.ToString(), TerminalColor.Yellow)
+            .Append(" | ", TerminalColor.Gray)
+            .AppendLine(change.StartTime.ToLocalTime().ToString("HH:mm:ss"), TerminalColor.Gray);
+
+        // Show full content for each tool (no truncation in full view)
+        foreach (var tool in change.Tools)
+        {
+            _diffText.AppendLine()
+                .Append($"─── {tool.Name} ", TerminalColor.Cyan);
+
+            var target = tool.FilePath ?? tool.Command ?? "";
+            if (!string.IsNullOrEmpty(target))
+            {
+                var fileName = tool.FilePath != null ? Path.GetFileName(tool.FilePath) : target;
+                _diffText.Append($"({fileName})", TerminalColor.Gray);
+            }
+            _diffText.AppendLine(" ───", TerminalColor.Cyan);
+
+            // Show tool content with high line limit (effectively unlimited for most cases)
+            RenderToolContent(_diffText, tool, maxLines: 500);
+        }
+    }
+
+    private static string TruncateLine(string line, int maxLength)
+    {
+        // Remove carriage return if present
+        line = line.TrimEnd('\r');
+        if (line.Length <= maxLength)
+            return line;
+        return line[..(maxLength - 3)] + "...";
     }
 
     private static string FormatTimeAgo(DateTime time)
