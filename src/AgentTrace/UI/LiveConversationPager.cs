@@ -973,7 +973,7 @@ public class LiveConversationPager
             ("", ""),
             ("/", "Search"),
             ("n/N", "Next / previous match"),
-            ("W", "Watch search (pause on match)"),
+            ("W", "Watch search term"),
             ("Esc", "Clear search"),
             ("", ""),
             ("q/Esc", "Back to session list"),
