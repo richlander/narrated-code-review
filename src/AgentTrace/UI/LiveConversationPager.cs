@@ -615,15 +615,12 @@ public class LiveConversationPager
                 }
                 break;
 
-            case PagerAction.WatchUpdate:
-                break; // Preview handled by rendering via _keyMap.WatchTerm
-
-            case PagerAction.WatchConfirm:
-                _watchTerm = _keyMap.WatchTerm;
+            case PagerAction.ToggleWatch:
+                if (_watchTerm.Length > 0)
+                    _watchTerm = ""; // Clear existing watch
+                else if (_keyMap.SearchTerm.Length > 0)
+                    _watchTerm = _keyMap.SearchTerm; // Promote search to watch
                 break;
-
-            case PagerAction.WatchCancel:
-                break; // Keep existing _watchTerm unchanged
 
             case PagerAction.TogglePause:
                 _autoFollow = !_autoFollow;
@@ -891,11 +888,7 @@ public class LiveConversationPager
         }
 
         // No search matches — check watch pattern (word-level)
-        // Interactive watch (\ key) takes priority, then CLI --watch, then preview during input
-        var watchPat = _keyMap.Mode == VimMode.Watch && _keyMap.WatchTerm.Length > 0
-            ? _keyMap.WatchTerm
-            : _watchTerm.Length > 0 ? _watchTerm
-            : _cliWatchPattern;
+        var watchPat = _watchTerm.Length > 0 ? _watchTerm : _cliWatchPattern;
 
         if (watchPat != null)
         {
@@ -979,8 +972,8 @@ public class LiveConversationPager
             ("e", "Toggle thinking blocks"),
             ("", ""),
             ("/", "Search"),
-            ("\\", "Watch (pause on match)"),
             ("n/N", "Next / previous match"),
+            ("W", "Watch search (pause on match)"),
             ("Esc", "Clear search"),
             ("", ""),
             ("q/Esc", "Back to session list"),
@@ -1080,7 +1073,7 @@ public class LiveConversationPager
 
         if (_watchTerm.Length > 0)
         {
-            left += $" | \\:{_watchTerm}";
+            left += $" | W:{_watchTerm}";
         }
         else if (_cliWatchPattern != null)
         {
@@ -1090,10 +1083,6 @@ public class LiveConversationPager
         if (_keyMap.Mode == VimMode.Search)
         {
             left = $" /{_keyMap.SearchTerm}\u2588";
-        }
-        else if (_keyMap.Mode == VimMode.Watch)
-        {
-            left = $" \\{_keyMap.WatchTerm}\u2588";
         }
         else if (_searchMatches.Count > 0)
         {
@@ -1133,9 +1122,9 @@ public class LiveConversationPager
         map.Bind(ConsoleKey.Q, new PagerAction.Quit());
         map.Bind(ConsoleKey.Escape, new PagerAction.ClearSearch());
 
-        // Live-only: pause/follow toggle and interactive watch
+        // Live-only: pause/follow toggle and watch
         map.Bind(ConsoleKey.P, new PagerAction.TogglePause());
-        map.BindChar('\\', new VimKeyMap.EnterWatch());
+        map.Bind(ConsoleKey.W, new PagerAction.ToggleWatch(), ConsoleModifiers.Shift);
 
         return map;
     }

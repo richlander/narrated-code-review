@@ -33,10 +33,8 @@ public abstract record PagerAction
     public sealed record PreviousMatch : PagerAction;
     public sealed record ClearSearch : PagerAction;
 
-    // Watch (persistent search — pauses live pager on match)
-    public sealed record WatchUpdate(string Term) : PagerAction;
-    public sealed record WatchConfirm : PagerAction;
-    public sealed record WatchCancel : PagerAction;
+    // Watch (promotes current search to persistent — pauses live pager on match)
+    public sealed record ToggleWatch : PagerAction;
 
     // Lifecycle
     public sealed record Quit : PagerAction;

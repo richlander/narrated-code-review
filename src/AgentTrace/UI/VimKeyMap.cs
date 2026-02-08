@@ -3,7 +3,7 @@ namespace AgentTrace.UI;
 /// <summary>
 /// Current input mode for the vim key processor.
 /// </summary>
-public enum VimMode { Normal, Search, Help, Watch }
+public enum VimMode { Normal, Search, Help }
 
 /// <summary>
 /// Maps keystrokes to PagerAction values with mode handling and multi-key sequence support.
@@ -17,11 +17,9 @@ public sealed class VimKeyMap
 
     private ConsoleKey? _pendingKey;
     private string _searchTerm = "";
-    private string _watchTerm = "";
 
     public VimMode Mode { get; private set; } = VimMode.Normal;
     public string SearchTerm => _searchTerm;
-    public string WatchTerm => _watchTerm;
 
     /// <summary>Bind a ConsoleKey (with optional modifiers) to an action.</summary>
     public void Bind(ConsoleKey key, PagerAction action, ConsoleModifiers modifiers = 0)
@@ -50,7 +48,6 @@ public sealed class VimKeyMap
         {
             VimMode.Help => ProcessHelp(),
             VimMode.Search => ProcessSearch(keyInfo),
-            VimMode.Watch => ProcessWatch(keyInfo),
             VimMode.Normal => ProcessNormal(keyInfo),
             _ => null
         };
@@ -85,34 +82,6 @@ public sealed class VimKeyMap
                 {
                     _searchTerm += keyInfo.KeyChar;
                     return new PagerAction.SearchUpdate(_searchTerm);
-                }
-                return null;
-        }
-    }
-
-    private PagerAction? ProcessWatch(ConsoleKeyInfo keyInfo)
-    {
-        switch (keyInfo.Key)
-        {
-            case ConsoleKey.Escape:
-                Mode = VimMode.Normal;
-                _watchTerm = "";
-                return new PagerAction.WatchCancel();
-
-            case ConsoleKey.Enter:
-                Mode = VimMode.Normal;
-                return new PagerAction.WatchConfirm();
-
-            case ConsoleKey.Backspace:
-                if (_watchTerm.Length > 0)
-                    _watchTerm = _watchTerm[..^1];
-                return new PagerAction.WatchUpdate(_watchTerm);
-
-            default:
-                if (keyInfo.KeyChar != '\0' && !char.IsControl(keyInfo.KeyChar))
-                {
-                    _watchTerm += keyInfo.KeyChar;
-                    return new PagerAction.WatchUpdate(_watchTerm);
                 }
                 return null;
         }
@@ -172,13 +141,6 @@ public sealed class VimKeyMap
             return new PagerAction.SearchUpdate("");
         }
 
-        if (action is EnterWatch)
-        {
-            Mode = VimMode.Watch;
-            _watchTerm = "";
-            return new PagerAction.WatchUpdate("");
-        }
-
         if (action is PagerAction.ShowHelp)
         {
             Mode = VimMode.Help;
@@ -190,9 +152,6 @@ public sealed class VimKeyMap
 
     /// <summary>Internal sentinel — triggers search mode entry, never reaches the pager.</summary>
     internal sealed record EnterSearch : PagerAction;
-
-    /// <summary>Internal sentinel — triggers watch mode entry, never reaches the pager.</summary>
-    internal sealed record EnterWatch : PagerAction;
 
     /// <summary>
     /// Creates a VimKeyMap with the standard pager bindings (shared between static and live pagers).
