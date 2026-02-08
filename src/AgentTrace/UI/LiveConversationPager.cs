@@ -287,7 +287,8 @@ public class LiveConversationPager
             _highlightFromLine = oldLineCount;
             _highlightExpiry = DateTime.UtcNow + HighlightDuration;
 
-            // Interactive watch: pause when new content matches
+            // Interactive watch: pause and scroll to match
+            var watchTriggered = false;
             if (_autoFollow && _watchTerm.Length > 0)
             {
                 for (var i = oldLineCount; i < _lines.Count; i++)
@@ -295,13 +296,15 @@ public class LiveConversationPager
                     if (_lines[i].Text.Contains(_watchTerm, StringComparison.OrdinalIgnoreCase))
                     {
                         _autoFollow = false;
+                        watchTriggered = true;
+                        _scrollOffset = Math.Max(0, i - _viewportHeight / 2);
                         break;
                     }
                 }
             }
 
             // Auto-follow: scroll to bottom when new content arrives
-            if (_autoFollow || wasAtBottom)
+            if (!watchTriggered && (_autoFollow || wasAtBottom))
             {
                 _scrollOffset = Math.Max(0, _lines.Count - _viewportHeight);
             }
