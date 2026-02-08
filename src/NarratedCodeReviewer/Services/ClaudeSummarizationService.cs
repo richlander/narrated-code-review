@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text;
-using NarratedCodeReviewer.Domain;
+using AgentLogs.Domain;
 
 namespace NarratedCodeReviewer.Services;
 

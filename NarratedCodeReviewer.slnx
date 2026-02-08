@@ -1,5 +1,7 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/AgentLogs/AgentLogs.csproj" />
+    <Project Path="src/AgentTrace/AgentTrace.csproj" />
     <Project Path="src/NarratedCodeReviewer/NarratedCodeReviewer.csproj" />
   </Folder>
 </Solution>

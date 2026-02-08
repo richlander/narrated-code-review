@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Terminal;
 using Microsoft.Extensions.Terminal.Components;
-using NarratedCodeReviewer.Domain;
-using NarratedCodeReviewer.Services;
+using AgentLogs.Domain;
+using AgentLogs.Services;
 
 namespace NarratedCodeReviewer.UI;
 

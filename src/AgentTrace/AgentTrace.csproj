@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>NarratedCodeReviewer</RootNamespace>
+    <RootNamespace>AgentTrace</RootNamespace>
 
     <!-- Native AOT Configuration -->
     <PublishAot>true</PublishAot>

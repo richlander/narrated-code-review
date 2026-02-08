@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Terminal;
-using NarratedCodeReviewer.Domain;
-using NarratedCodeReviewer.Providers;
-using NarratedCodeReviewer.Services;
+using AgentLogs.Domain;
+using AgentLogs.Providers;
+using AgentLogs.Services;
 using NarratedCodeReviewer.UI;
 
 if (args.Contains("--help") || args.Contains("-h"))
