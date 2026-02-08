@@ -304,7 +304,10 @@ public class LiveConversationPager
             }
 
             // Auto-follow: scroll to bottom when new content arrives
-            if (!watchTriggered && (_autoFollow || wasAtBottom))
+            // When a watch is active, only explicit actions (G, p) can resume follow —
+            // wasAtBottom must not silently override the watch pause.
+            var canAutoResume = wasAtBottom && _watchTerm.Length == 0;
+            if (!watchTriggered && (_autoFollow || canAutoResume))
             {
                 _scrollOffset = Math.Max(0, _lines.Count - _viewportHeight);
             }
