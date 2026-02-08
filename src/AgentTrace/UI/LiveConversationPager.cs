@@ -43,9 +43,12 @@ public class LiveConversationPager
     private List<SearchMatch> _searchMatches = [];
     private int _currentMatchIndex = -1;
 
-    // Watch mode (always-on search, exits on match)
-    private string? _watchPattern;
+    // CLI watch (--watch flag, exits on match)
+    private string? _cliWatchPattern;
     private string? _watchMatchContext;
+
+    // Interactive watch (\ key, pauses on match)
+    private string _watchTerm = "";
 
     // Thinking indicator state
     private bool _isThinking;
@@ -60,8 +63,8 @@ public class LiveConversationPager
     /// </summary>
     public string? WatchPattern
     {
-        get => _watchPattern;
-        init => _watchPattern = value;
+        get => _cliWatchPattern;
+        init => _cliWatchPattern = value;
     }
 
     /// <summary>
@@ -223,8 +226,8 @@ public class LiveConversationPager
 
             _lastFileChange = DateTime.UtcNow;
 
-            // Check watch pattern against new entries
-            if (_watchPattern != null)
+            // Check CLI watch pattern against new entries (exits on match)
+            if (_cliWatchPattern != null)
             {
                 foreach (var entry in newEntries)
                 {
@@ -235,12 +238,12 @@ public class LiveConversationPager
                         _ => null
                     };
 
-                    if (text != null && text.Contains(_watchPattern, StringComparison.OrdinalIgnoreCase))
+                    if (text != null && text.Contains(_cliWatchPattern, StringComparison.OrdinalIgnoreCase))
                     {
                         // Find the matching line for context
                         foreach (var line in text.Split('\n'))
                         {
-                            if (line.Contains(_watchPattern, StringComparison.OrdinalIgnoreCase))
+                            if (line.Contains(_cliWatchPattern, StringComparison.OrdinalIgnoreCase))
                             {
                                 _watchMatchContext = line.Trim();
                                 break;
@@ -257,7 +260,7 @@ public class LiveConversationPager
                         foreach (var tool in asst.ToolUses)
                         {
                             var cmd = tool.Command ?? tool.Content ?? "";
-                            if (cmd.Contains(_watchPattern, StringComparison.OrdinalIgnoreCase))
+                            if (cmd.Contains(_cliWatchPattern, StringComparison.OrdinalIgnoreCase))
                             {
                                 _watchMatchContext = $"{tool.Name}: {cmd.Trim().Split('\n').FirstOrDefault()}";
                                 _quit = true;
@@ -283,6 +286,19 @@ public class LiveConversationPager
             // Set highlight on new lines
             _highlightFromLine = oldLineCount;
             _highlightExpiry = DateTime.UtcNow + HighlightDuration;
+
+            // Interactive watch: pause when new content matches
+            if (_autoFollow && _watchTerm.Length > 0)
+            {
+                for (var i = oldLineCount; i < _lines.Count; i++)
+                {
+                    if (_lines[i].Text.Contains(_watchTerm, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _autoFollow = false;
+                        break;
+                    }
+                }
+            }
 
             // Auto-follow: scroll to bottom when new content arrives
             if (_autoFollow || wasAtBottom)
@@ -599,6 +615,16 @@ public class LiveConversationPager
                 }
                 break;
 
+            case PagerAction.WatchUpdate:
+                break; // Preview handled by rendering via _keyMap.WatchTerm
+
+            case PagerAction.WatchConfirm:
+                _watchTerm = _keyMap.WatchTerm;
+                break;
+
+            case PagerAction.WatchCancel:
+                break; // Keep existing _watchTerm unchanged
+
             case PagerAction.TogglePause:
                 _autoFollow = !_autoFollow;
                 if (_autoFollow)
@@ -865,23 +891,29 @@ public class LiveConversationPager
         }
 
         // No search matches — check watch pattern (word-level)
-        if (_watchPattern != null)
+        // Interactive watch (\ key) takes priority, then CLI --watch, then preview during input
+        var watchPat = _keyMap.Mode == VimMode.Watch && _keyMap.WatchTerm.Length > 0
+            ? _keyMap.WatchTerm
+            : _watchTerm.Length > 0 ? _watchTerm
+            : _cliWatchPattern;
+
+        if (watchPat != null)
         {
             var hasWatch = false;
             pos = 0;
             var wp = 0;
-            while ((wp = text.IndexOf(_watchPattern, pos, StringComparison.OrdinalIgnoreCase)) >= 0)
+            while ((wp = text.IndexOf(watchPat, pos, StringComparison.OrdinalIgnoreCase)) >= 0)
             {
                 hasWatch = true;
                 if (pos < wp)
                     EmitNormal(text[pos..wp]);
 
                 _terminal.Append($"{AnsiCodes.CSI}41;37m"); // Watch: red bg, white fg
-                _terminal.Append(text[wp..(wp + _watchPattern.Length)]);
+                _terminal.Append(text[wp..(wp + watchPat.Length)]);
                 _terminal.Append($"{AnsiCodes.CSI}49m");
                 _terminal.ResetColor();
 
-                pos = wp + _watchPattern.Length;
+                pos = wp + watchPat.Length;
             }
 
             if (hasWatch)
@@ -947,6 +979,7 @@ public class LiveConversationPager
             ("e", "Toggle thinking blocks"),
             ("", ""),
             ("/", "Search"),
+            ("\\", "Watch (pause on match)"),
             ("n/N", "Next / previous match"),
             ("Esc", "Clear search"),
             ("", ""),
@@ -1045,14 +1078,22 @@ public class LiveConversationPager
 
         var left = $" {mode} | {turnCount} turns | {position}";
 
-        if (_watchPattern != null)
+        if (_watchTerm.Length > 0)
         {
-            left += $" | watch:{_watchPattern}";
+            left += $" | \\:{_watchTerm}";
+        }
+        else if (_cliWatchPattern != null)
+        {
+            left += $" | watch:{_cliWatchPattern}";
         }
 
         if (_keyMap.Mode == VimMode.Search)
         {
             left = $" /{_keyMap.SearchTerm}\u2588";
+        }
+        else if (_keyMap.Mode == VimMode.Watch)
+        {
+            left = $" \\{_keyMap.WatchTerm}\u2588";
         }
         else if (_searchMatches.Count > 0)
         {
@@ -1092,8 +1133,9 @@ public class LiveConversationPager
         map.Bind(ConsoleKey.Q, new PagerAction.Quit());
         map.Bind(ConsoleKey.Escape, new PagerAction.ClearSearch());
 
-        // Live-only: pause/follow toggle
+        // Live-only: pause/follow toggle and interactive watch
         map.Bind(ConsoleKey.P, new PagerAction.TogglePause());
+        map.BindChar('\\', new VimKeyMap.EnterWatch());
 
         return map;
     }
