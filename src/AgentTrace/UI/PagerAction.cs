@@ -33,6 +33,9 @@ public abstract record PagerAction
     public sealed record PreviousMatch : PagerAction;
     public sealed record ClearSearch : PagerAction;
 
+    // Bookmarks
+    public sealed record ToggleBookmark : PagerAction;
+
     // Watch (promotes current search to persistent — pauses live pager on match)
     public sealed record ToggleWatch : PagerAction;
 

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
+using AgentTrace.Services;
 
 namespace AgentTrace.UI;
 
@@ -11,8 +12,11 @@ public class ConversationPager
     private readonly Conversation _conversation;
     private readonly ConversationRenderer _renderer;
     private readonly ITerminal _terminal;
+    private readonly SessionContext? _sessionContext;
+    private readonly BookmarkStore? _bookmarkStore;
 
     private readonly VimKeyMap _keyMap;
+    private bool _isBookmarked;
 
     private List<StyledLine> _lines = [];
     private int _scrollOffset;
@@ -25,11 +29,14 @@ public class ConversationPager
     private List<SearchMatch> _searchMatches = [];
     private int _currentMatchIndex = -1;
 
-    public ConversationPager(Conversation conversation, ITerminal terminal)
+    public ConversationPager(Conversation conversation, ITerminal terminal, SessionContext? sessionContext = null, BookmarkStore? bookmarkStore = null)
     {
         _conversation = conversation;
         _renderer = new ConversationRenderer();
         _terminal = terminal;
+        _sessionContext = sessionContext;
+        _bookmarkStore = bookmarkStore;
+        _isBookmarked = bookmarkStore?.IsBookmarked(conversation.SessionId) ?? false;
         _keyMap = CreateKeyMap();
     }
 
@@ -131,6 +138,10 @@ public class ConversationPager
             case PagerAction.ToggleThinking:
                 _renderer.ShowThinking = !_renderer.ShowThinking;
                 ReRender();
+                break;
+
+            case PagerAction.ToggleBookmark when _bookmarkStore != null:
+                _isBookmarked = _bookmarkStore.Toggle(_conversation.SessionId);
                 break;
 
             case PagerAction.ShowHelp:
@@ -427,6 +438,7 @@ public class ConversationPager
             ("", ""),
             ("t", "Toggle tool details"),
             ("e", "Toggle thinking blocks"),
+            ("b", "Toggle bookmark"),
             ("", ""),
             ("/", "Search"),
             ("n/N", "Next / previous match"),
@@ -516,21 +528,45 @@ public class ConversationPager
         var tools = _renderer.ShowToolDetails ? "t:on" : "t:off";
         var thinking = _renderer.ShowThinking ? "e:on" : "e:off";
 
-        var status = $" {turnCount} turns | {tools} {thinking} | {position} | ?:help";
+        // Build left side: session identity + turns + position
+        var left = " ";
+        if (_isBookmarked)
+            left += "★ ";
+        if (_sessionContext != null)
+        {
+            var shortId = _sessionContext.Id.Length > 7 ? _sessionContext.Id[..7] : _sessionContext.Id;
+            var project = _sessionContext.ProjectName ?? "";
+            var date = _sessionContext.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            left += $"{shortId} {project} {date} | ";
+        }
+        left += $"{turnCount} turns | {tools} {thinking} | {position}";
+
+        // Navigation indicator
+        if (_sessionContext is { TotalSessions: > 1 })
+        {
+            var idx = _sessionContext.Index;
+            var total = _sessionContext.TotalSessions;
+            var leftArrow = idx > 0 ? "\u2190" : " ";
+            var rightArrow = idx < total - 1 ? "\u2192" : " ";
+            left += $" | {leftArrow}[{idx + 1}/{total}]{rightArrow}";
+        }
 
         if (_keyMap.Mode == VimMode.Search)
         {
-            status = $" /{_keyMap.SearchTerm}█";
+            left = $" /{_keyMap.SearchTerm}\u2588";
         }
         else if (_searchMatches.Count > 0)
         {
-            status += $" | [{_currentMatchIndex + 1}/{_searchMatches.Count}]";
+            left += $" | [{_currentMatchIndex + 1}/{_searchMatches.Count}]";
         }
 
+        var right = " ?:help ";
         var maxWidth = _terminal.Width - 1;
+        var gap = Math.Max(1, maxWidth - left.Length - right.Length);
+        var status = left + new string(' ', gap) + right;
         if (status.Length > maxWidth)
             status = status[..maxWidth];
-        else
+        else if (status.Length < maxWidth)
             status += new string(' ', maxWidth - status.Length);
 
         _terminal.Append($"{AnsiCodes.CSI}7m");

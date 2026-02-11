@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
 using AgentLogs.Parsing;
+using AgentTrace.Services;
 
 namespace AgentTrace.UI;
 
@@ -13,6 +14,9 @@ public class LiveConversationPager
     private readonly ITerminal _terminal;
     private readonly string _filePath;
     private readonly string _sessionId;
+    private readonly SessionContext? _sessionContext;
+    private readonly BookmarkStore? _bookmarkStore;
+    private bool _isBookmarked;
 
     private static readonly TimeSpan HighlightDuration = TimeSpan.FromSeconds(2);
 
@@ -72,7 +76,7 @@ public class LiveConversationPager
     /// </summary>
     public string? WatchMatchContext => _watchMatchContext;
 
-    public LiveConversationPager(Conversation conversation, ITerminal terminal, string filePath)
+    public LiveConversationPager(Conversation conversation, ITerminal terminal, string filePath, SessionContext? sessionContext = null, BookmarkStore? bookmarkStore = null)
     {
         _conversation = conversation;
         _entries = new List<Entry>(conversation.Turns.SelectMany(t => t.Entries));
@@ -80,6 +84,9 @@ public class LiveConversationPager
         _terminal = terminal;
         _filePath = filePath;
         _sessionId = conversation.SessionId;
+        _sessionContext = sessionContext;
+        _bookmarkStore = bookmarkStore;
+        _isBookmarked = bookmarkStore?.IsBookmarked(conversation.SessionId) ?? false;
         _lastEntryCount = _entries.Count;
         _keyMap = CreateKeyMap();
     }
@@ -576,6 +583,10 @@ public class LiveConversationPager
                 ReRender();
                 break;
 
+            case PagerAction.ToggleBookmark when _bookmarkStore != null:
+                _isBookmarked = _bookmarkStore.Toggle(_sessionId);
+                break;
+
             case PagerAction.ShowHelp:
             case PagerAction.DismissHelp:
                 break; // Mode tracked by VimKeyMap
@@ -976,6 +987,7 @@ public class LiveConversationPager
             ("p", "Toggle pause / follow"),
             ("t", "Toggle tool details"),
             ("e", "Toggle thinking blocks"),
+            ("b", "Toggle bookmark"),
             ("", ""),
             ("/", "Search"),
             ("n/N", "Next / previous match"),
@@ -1075,7 +1087,27 @@ public class LiveConversationPager
             mode = unseenBelow > 0 ? $"PAUSED +{unseenBelow}" : "PAUSED";
         }
 
-        var left = $" {mode} | {turnCount} turns | {position}";
+        var left = " ";
+        if (_isBookmarked)
+            left += "★ ";
+        if (_sessionContext != null)
+        {
+            var shortId = _sessionContext.Id.Length > 7 ? _sessionContext.Id[..7] : _sessionContext.Id;
+            var project = _sessionContext.ProjectName ?? "";
+            var date = _sessionContext.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            left += $"{shortId} {project} {date} | ";
+        }
+        left += $"{mode} | {turnCount} turns | {position}";
+
+        // Navigation indicator
+        if (_sessionContext is { TotalSessions: > 1 })
+        {
+            var idx = _sessionContext.Index;
+            var total = _sessionContext.TotalSessions;
+            var leftArrow = idx > 0 ? "\u2190" : " ";
+            var rightArrow = idx < total - 1 ? "\u2192" : " ";
+            left += $" | {leftArrow}[{idx + 1}/{total}]{rightArrow}";
+        }
 
         if (_watchTerm.Length > 0)
         {

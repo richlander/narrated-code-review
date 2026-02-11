@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>AgentTrace</RootNamespace>
 
+    <!-- .NET Global Tool -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>agent-trace</ToolCommandName>
+
     <!-- Native AOT Configuration -->
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Speed</OptimizationPreference>
@@ -17,9 +21,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="SKILL.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../AgentLogs/AgentLogs.csproj" />
     <!-- TODO: Replace with NuGet package once published -->
     <ProjectReference Include="../../../terminal-experiments/src/Microsoft.Extensions.Terminal/Microsoft.Extensions.Terminal.csproj" />
+    <ProjectReference Include="../../../markout/src/Markout/Markout.csproj" />
   </ItemGroup>
 
 </Project>

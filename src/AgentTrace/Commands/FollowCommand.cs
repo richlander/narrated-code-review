@@ -1,8 +1,8 @@
-using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
 using AgentLogs.Parsing;
 using AgentLogs.Providers;
 using AgentTrace.UI;
+using Microsoft.Extensions.Terminal;
 
 namespace AgentTrace.Commands;
 
@@ -57,8 +57,11 @@ public static class FollowCommand
         var result = await EntryParser.ParseFileFullAsync(activeFile);
         var conversation = new Conversation(sessionId, result.Entries);
 
+        // Build session context (single session in follow mode)
+        var ctx = new SessionContext(sessionId, null, fileInfo.CreationTimeUtc, 0, 1);
+
         // Launch live pager
-        var pager = new LiveConversationPager(conversation, terminal, activeFile)
+        var pager = new LiveConversationPager(conversation, terminal, activeFile, ctx)
         {
             WatchPattern = watchPattern
         };

@@ -4,6 +4,7 @@ using AgentLogs.Parsing;
 using AgentLogs.Providers;
 using AgentLogs.Services;
 using AgentTrace.Commands;
+using AgentTrace.Services;
 using AgentTrace.UI;
 
 if (args.Contains("--help") || args.Contains("-h"))
@@ -18,6 +19,12 @@ if (args.Contains("--version") || args.Contains("-v"))
     return 0;
 }
 
+if (args.Contains("--skill"))
+{
+    SkillCommand.Execute();
+    return 0;
+}
+
 // Parse arguments
 string? customPath = null;
 string? projectFilter = null;
@@ -27,6 +34,19 @@ string? watchPattern = null;
 string? targetDir = null;
 var showAll = false;
 var followMode = false;
+var plainMode = false;
+var tsvMode = false;
+string? dumpSessionId = null;
+string? infoSessionId = null;
+string? summarySessionId = null;
+string? tocSessionId = null;
+int? headLines = null;
+int? tailLines = null;
+TurnSlice turnSlice = default;
+string? speakerFilter = null;
+var compactMode = false;
+string? bookmarkSessionId = null;
+var bookmarksFilter = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -55,6 +75,45 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--dir" or "-C" when i + 1 < args.Length:
             targetDir = Path.GetFullPath(args[++i]);
+            break;
+        case "--plain":
+            plainMode = true;
+            break;
+        case "--tsv":
+            tsvMode = true;
+            break;
+        case "--dump" when i + 1 < args.Length:
+            dumpSessionId = args[++i];
+            break;
+        case "--info" when i + 1 < args.Length:
+            infoSessionId = args[++i];
+            break;
+        case "--summary" when i + 1 < args.Length:
+            summarySessionId = args[++i];
+            break;
+        case "--toc" when i + 1 < args.Length:
+            tocSessionId = args[++i];
+            break;
+        case "--head" when i + 1 < args.Length:
+            if (int.TryParse(args[++i], out var h)) headLines = h;
+            break;
+        case "--tail" when i + 1 < args.Length:
+            if (int.TryParse(args[++i], out var t)) tailLines = t;
+            break;
+        case "--turns" when i + 1 < args.Length:
+            turnSlice = TurnSlice.Parse(args[++i]);
+            break;
+        case "--speaker" when i + 1 < args.Length:
+            speakerFilter = args[++i];
+            break;
+        case "--compact":
+            compactMode = true;
+            break;
+        case "--bookmark" when i + 1 < args.Length:
+            bookmarkSessionId = args[++i];
+            break;
+        case "--bookmarks":
+            bookmarksFilter = true;
             break;
         default:
             // Positional argument: treat as session ID
@@ -91,6 +150,25 @@ else if (!showAll && projectFilter == null && customPath == null)
 var provider = detectedProjectDir != null
     ? new ClaudeCodeProvider(baseProvider.BasePath) { ProjectDirFilter = detectedProjectDir }
     : baseProvider;
+
+// Create bookmark store when project is known
+BookmarkStore? bookmarkStore = detectedProjectDir != null
+    ? new BookmarkStore(baseProvider.GetProjectLogPath(detectedProjectDir))
+    : null;
+
+// Handle --bookmark toggle (needs provider + project dir only, no session loading)
+if (bookmarkSessionId != null)
+{
+    if (bookmarkStore == null)
+    {
+        Console.Error.WriteLine("Cannot bookmark: no project directory detected. Use -C <dir> to specify one.");
+        return 1;
+    }
+
+    var added = bookmarkStore.Toggle(bookmarkSessionId);
+    Console.WriteLine(added ? $"★ Bookmarked {bookmarkSessionId}" : $"  Unbookmarked {bookmarkSessionId}");
+    return 0;
+}
 
 // Create terminal
 var console = new SystemConsole();
@@ -130,18 +208,73 @@ if (followMode)
 var sessionManager = new SessionManager();
 
 // Load sessions
-terminal.Append("Loading sessions...");
+var quietMode = plainMode || tsvMode || dumpSessionId != null || infoSessionId != null || summarySessionId != null || tocSessionId != null;
+if (!quietMode)
+    terminal.Append("Loading sessions...");
 await sessionManager.LoadFromProviderAsync(provider);
 var sessions = sessionManager.GetAllSessions();
 
-var scopeLabel = detectedProjectDir != null
-    ? $" {sessions.Count} sessions for this project"
-    : $" {sessions.Count} sessions loaded";
-terminal.AppendLine(scopeLabel);
+if (!quietMode)
+{
+    var scopeLabel = detectedProjectDir != null
+        ? $" {sessions.Count} sessions for this project"
+        : $" {sessions.Count} sessions loaded";
+    terminal.AppendLine(scopeLabel);
+}
+
+// Plain-text commands — no ANSI, suitable for LLM consumption / piping
+if (infoSessionId != null)
+{
+    DumpCommand.PrintInfo(sessionManager, infoSessionId, turnSlice);
+    return 0;
+}
+
+if (tocSessionId != null)
+{
+    DumpCommand.PrintToc(sessionManager, tocSessionId);
+    return 0;
+}
+
+if (summarySessionId != null)
+{
+    return await SummaryCommand.RunAsync(sessionManager, summarySessionId, turnSlice);
+}
+
+if (dumpSessionId != null)
+{
+    DumpCommand.PrintConversation(sessionManager, dumpSessionId, headLines, tailLines, turnSlice, speakerFilter, compactMode);
+    return 0;
+}
 
 // Route to appropriate command
 if (args.Contains("--list") || args.Contains("-l"))
 {
+    if (tsvMode)
+    {
+        if (detectedProjectDir == null && !showAll && targetDir == null && projectFilter == null && customPath == null)
+        {
+            var cwd = Environment.CurrentDirectory;
+            Console.Error.WriteLine($"Warning: No sessions found for current directory: {cwd}");
+            Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
+        }
+
+        DumpCommand.ListSessionsTsv(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null);
+        return 0;
+    }
+
+    if (plainMode)
+    {
+        if (detectedProjectDir == null && !showAll && targetDir == null && projectFilter == null && customPath == null)
+        {
+            var cwd = Environment.CurrentDirectory;
+            Console.Error.WriteLine($"Warning: No sessions found for current directory: {cwd}");
+            Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
+        }
+
+        DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null);
+        return 0;
+    }
+
     ListCommand.Execute(sessionManager, terminal, projectFilter);
     return 0;
 }
@@ -159,10 +292,18 @@ if (sessionId != null)
     return 0;
 }
 
+// Non-interactive context (piped, no TTY) — list sessions instead of launching TUI
+if (Console.IsInputRedirected)
+{
+    DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null);
+    return 0;
+}
+
 // Interactive session picker mode — loop between picker and session view
+var pickerIndex = 0;
 while (true)
 {
-    var picker = new SessionPicker(sessionManager, terminal);
+    var picker = new SessionPicker(sessionManager, terminal, pickerIndex, bookmarkStore);
     var selectedSession = await picker.RunAsync();
 
     if (selectedSession == null)
@@ -174,7 +315,7 @@ while (true)
 
     while (true)
     {
-        var result = await ViewSession(sessionManager, terminal, sessions[currentIndex].Id);
+        var result = await ViewSession(sessionManager, terminal, sessions[currentIndex].Id, currentIndex, sessions.Count);
 
         if (result == PagerResult.NextSession && currentIndex < sessions.Count - 1)
         {
@@ -189,12 +330,15 @@ while (true)
             break; // Back to picker
         }
     }
+
+    // Restore picker position to the session we were just viewing
+    pickerIndex = currentIndex;
 }
 
 return 0;
 
 // View a specific session in the conversation pager
-async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string sid)
+async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string sid, int index = -1, int total = -1)
 {
     var entries = sm.GetSessionEntries(sid);
     if (entries.Count == 0)
@@ -222,6 +366,18 @@ async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string si
     var session = sm.GetSession(sid);
     var conversation = new Conversation(sid, entries);
 
+    // Build session context for status bar display
+    SessionContext? ctx = null;
+    if (session != null)
+    {
+        ctx = new SessionContext(
+            session.Id,
+            session.ProjectName,
+            session.StartTime,
+            Math.Max(0, index),
+            Math.Max(1, total));
+    }
+
     // Use live pager for active sessions
     if (session?.IsActive == true)
     {
@@ -230,12 +386,12 @@ async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string si
 
         if (filePath != null)
         {
-            var livePager = new LiveConversationPager(conversation, term, filePath);
+            var livePager = new LiveConversationPager(conversation, term, filePath, ctx, bookmarkStore);
             return await livePager.RunAsync();
         }
     }
 
-    var pager = new ConversationPager(conversation, term);
+    var pager = new ConversationPager(conversation, term, ctx, bookmarkStore);
     return await pager.RunAsync();
 }
 
@@ -248,15 +404,44 @@ void ShowHelp()
     Console.WriteLine("  agent-trace              Interactive picker (scoped to current project)");
     Console.WriteLine("  agent-trace <session-id> View a specific session");
     Console.WriteLine("  agent-trace --list       List sessions");
+    Console.WriteLine("  agent-trace --list --plain  List sessions as markdown");
+    Console.WriteLine("  agent-trace --list --tsv    List sessions as tab-separated values");
+    Console.WriteLine("  agent-trace --info <id>  Print session metadata (no content)");
+    Console.WriteLine("  agent-trace --dump <id>  Print full conversation as plain text");
+    Console.WriteLine("  agent-trace --dump <id> --head 50   First 50 lines of dump");
+    Console.WriteLine("  agent-trace --dump <id> --tail 50   Last 50 lines of dump");
+    Console.WriteLine("  agent-trace --dump <id> --turns 3   Last 3 turns only");
+    Console.WriteLine("  agent-trace --dump <id> --turns 9..13  Turns 9 through 13");
+    Console.WriteLine("  agent-trace --toc <id>              Table of contents (one line per turn)");
+    Console.WriteLine("  agent-trace --dump <id> --speaker assistant  Only assistant text");
+    Console.WriteLine("  agent-trace --dump <id> --compact   Collapse large tool results");
+    Console.WriteLine("  agent-trace --summary <id>          Summarize via claude CLI");
+    Console.WriteLine("  agent-trace --bookmark <id>  Toggle bookmark on a session");
+    Console.WriteLine("  agent-trace --list --plain --bookmarks  List only bookmarked sessions");
     Console.WriteLine("  agent-trace --follow     Follow the active session (live tail)");
     Console.WriteLine("  agent-trace --watch \"pattern\"  Follow + exit on match (tripwire)");
     Console.WriteLine("  agent-trace --search \"term\"  Search across sessions");
+    Console.WriteLine("  agent-trace --skill      Print LLM skill guide (how to use this tool)");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  -h, --help               Show this help");
     Console.WriteLine("  -v, --version            Show version");
     Console.WriteLine("  -p, --path <path>        Custom Claude logs directory");
     Console.WriteLine("  -l, --list               List sessions non-interactively");
+    Console.WriteLine("  --plain                  Markdown output (no ANSI); use with --list");
+    Console.WriteLine("  --tsv                    Tab-separated output; use with --list");
+    Console.WriteLine("  --info <session-id>      Print session metadata as markdown");
+    Console.WriteLine("  --dump <session-id>      Print full conversation as plain text to stdout");
+    Console.WriteLine("  --toc <session-id>       Print table of contents (one line per turn)");
+    Console.WriteLine("  --head <N>               Output first N lines (use with --dump)");
+    Console.WriteLine("  --tail <N>               Output last N lines (use with --dump)");
+    Console.WriteLine("  --turns <N|M..N>         Last N turns, or range M..N (1-indexed, inclusive)");
+    Console.WriteLine("  --speaker <user|assistant>  Filter entries by role (use with --dump)");
+    Console.WriteLine("  --compact                Collapse large tool results to one line");
+    Console.WriteLine("  --bookmark <session-id>  Toggle bookmark on a session");
+    Console.WriteLine("  --bookmarks              Show only bookmarked sessions (use with --list)");
+    Console.WriteLine("  --summary <session-id>   Summarize conversation via claude --print");
+    Console.WriteLine("  --skill                  Print LLM skill guide (SKILL.md)");
     Console.WriteLine("  -f, --follow             Follow the active session for this project");
     Console.WriteLine("  -w, --watch <pattern>    Follow + exit with code 2 when pattern matches");
     Console.WriteLine("  -s, --search <term>      Cross-session search (supports regex)");
@@ -276,6 +461,7 @@ void ShowHelp()
     Console.WriteLine("  ←/→                      Previous/next session");
     Console.WriteLine("  t                        Toggle tool details");
     Console.WriteLine("  e                        Toggle thinking blocks");
+    Console.WriteLine("  b                        Toggle bookmark");
     Console.WriteLine("  /                        Search");
     Console.WriteLine("  n/N                      Next/previous match");
     Console.WriteLine("  ?                        Help");

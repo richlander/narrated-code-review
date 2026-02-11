@@ -196,6 +196,9 @@ public sealed class VimKeyMap
         map.Bind(ConsoleKey.E, new PagerAction.ToggleThinking());
         map.BindChar('?', new PagerAction.ShowHelp());
 
+        // Bookmarks
+        map.Bind(ConsoleKey.B, new PagerAction.ToggleBookmark());
+
         // Search
         map.BindChar('/', new EnterSearch());
         map.Bind(ConsoleKey.N, new PagerAction.NextMatch());

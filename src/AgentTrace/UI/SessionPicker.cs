@@ -2,6 +2,7 @@ using Microsoft.Extensions.Terminal;
 using Microsoft.Extensions.Terminal.Components;
 using AgentLogs.Domain;
 using AgentLogs.Services;
+using AgentTrace.Services;
 
 namespace AgentTrace.UI;
 
@@ -11,6 +12,7 @@ namespace AgentTrace.UI;
 public class SessionPicker
 {
     private readonly SessionManager _sessionManager;
+    private readonly BookmarkStore? _bookmarkStore;
     private readonly TerminalApp _app;
     private readonly Table _table;
     private readonly Text _headerText;
@@ -19,17 +21,22 @@ public class SessionPicker
     private readonly Panel _headerPanel;
     private readonly Panel _footerPanel;
 
+    private readonly int _initialSelectedIndex;
+
     private IReadOnlyList<Session> _sessions = [];
     private IReadOnlyList<Session> _filteredSessions = [];
+    private HashSet<string> _bookmarks = [];
     private int _selectedIndex;
     private string _filter = "";
     private bool _isFiltering;
     private Session? _selectedSession;
     private bool _quit;
 
-    public SessionPicker(SessionManager sessionManager, ITerminal terminal)
+    public SessionPicker(SessionManager sessionManager, ITerminal terminal, int initialSelectedIndex = 0, BookmarkStore? bookmarkStore = null)
     {
         _sessionManager = sessionManager;
+        _bookmarkStore = bookmarkStore;
+        _initialSelectedIndex = initialSelectedIndex;
         _app = new TerminalApp(terminal);
 
         _headerText = new Text();
@@ -58,6 +65,7 @@ public class SessionPicker
         };
         _table.AddColumn("", 2);
         _table.AddColumn("", 2);
+        _table.AddColumn("", 2);
         _table.AddColumn("Project", 25);
         _table.AddColumn("Messages", 12);
         _table.AddColumn("Tools", 8);
@@ -77,7 +85,8 @@ public class SessionPicker
     {
         _sessions = _sessionManager.GetAllSessions();
         _filteredSessions = _sessions;
-        _selectedIndex = 0;
+        _bookmarks = _bookmarkStore?.Load() ?? [];
+        _selectedIndex = Math.Min(_initialSelectedIndex, Math.Max(0, _sessions.Count - 1));
 
         _app.Terminal.HideCursor();
         _app.Buffer.Invalidate();
@@ -165,6 +174,15 @@ public class SessionPicker
                 }
                 break;
 
+            case ConsoleKey.B when _bookmarkStore != null:
+                if (_selectedIndex >= 0 && _selectedIndex < _filteredSessions.Count)
+                {
+                    var sid = _filteredSessions[_selectedIndex].Id;
+                    _bookmarkStore.Toggle(sid);
+                    _bookmarks = _bookmarkStore.Load();
+                }
+                break;
+
             case ConsoleKey.Oem2 when key.KeyChar == '/': // / key
                 _isFiltering = true;
                 _filter = "";
@@ -241,12 +259,14 @@ public class SessionPicker
         {
             var duration = FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            var bookmarked = _bookmarks.Contains(session.Id);
 
             return new TableRow(new[]
             {
                 new TableCell(index == _selectedIndex ? ">" : ""),
                 new TableCell(session.IsActive ? "●" : "○",
                     session.IsActive ? TerminalColor.Green : TerminalColor.Gray),
+                new TableCell(bookmarked ? "★" : "", TerminalColor.Yellow),
                 new TableCell(session.ProjectName ?? "Unknown"),
                 new TableCell($"{session.UserMessageCount}↔{session.AssistantMessageCount}"),
                 new TableCell($"{session.ToolCallCount}"),
@@ -273,7 +293,10 @@ public class SessionPicker
             _footerText
                 .Append("↑↓/jk", TerminalColor.Gray).Append(" Navigate  ")
                 .Append("Enter", TerminalColor.Gray).Append(" Open  ")
-                .Append("/", TerminalColor.Gray).Append(" Filter  ")
+                .Append("/", TerminalColor.Gray).Append(" Filter  ");
+            if (_bookmarkStore != null)
+                _footerText.Append("b", TerminalColor.Gray).Append(" Bookmark  ");
+            _footerText
                 .Append("q", TerminalColor.Gray).Append(" Quit");
         }
     }
