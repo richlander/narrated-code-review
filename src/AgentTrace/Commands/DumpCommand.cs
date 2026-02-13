@@ -8,10 +8,13 @@ using Markout;
 namespace AgentTrace.Commands;
 
 /// <summary>
-/// Selects a slice of turns: either the last N or a 1-indexed range M..N.
+/// Selects a slice of turns: a single turn by index, a 1-indexed range M..N, or the last N.
 /// </summary>
 public readonly record struct TurnSlice(int? Last, int? From, int? To)
 {
+    /// <summary>
+    /// Parses --turns value: bare "5" → turn 5 (1-indexed), "3..7" → range 3-7.
+    /// </summary>
     public static TurnSlice Parse(string value)
     {
         var dotIdx = value.IndexOf("..", StringComparison.Ordinal);
@@ -23,11 +26,17 @@ public readonly record struct TurnSlice(int? Last, int? From, int? To)
                 return new TurnSlice(null, from, to);
         }
 
-        if (int.TryParse(value, out var last))
-            return new TurnSlice(last, null, null);
+        // Bare number = single turn by 1-indexed position
+        if (int.TryParse(value, out var index) && index > 0)
+            return new TurnSlice(null, index, index);
 
         return default;
     }
+
+    /// <summary>
+    /// Creates a TurnSlice for the last N turns (used by --last flag).
+    /// </summary>
+    public static TurnSlice LastN(int count) => new(count, null, null);
 
     public IReadOnlyList<Turn> Apply(IReadOnlyList<Turn> turns)
     {
@@ -49,7 +58,11 @@ public readonly record struct TurnSlice(int? Last, int? From, int? To)
     public string Describe()
     {
         if (From.HasValue && To.HasValue)
+        {
+            if (From.Value == To.Value)
+                return $"turn {From.Value}";
             return $"turns {From.Value}..{To.Value}";
+        }
         if (Last.HasValue)
             return $"last {Last.Value} turns";
         return "all turns";
@@ -711,7 +724,7 @@ public static class DumpCommand
         }
     }
 
-    private static IReadOnlyList<Session> FilterSessions(SessionManager sessionManager, string? projectFilter)
+    internal static IReadOnlyList<Session> FilterSessions(SessionManager sessionManager, string? projectFilter)
     {
         var sessions = sessionManager.GetAllSessions();
 

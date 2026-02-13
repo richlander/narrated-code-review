@@ -50,6 +50,16 @@ public class EntryMatcher
         if (text != null && IsMatch(text))
             return ExtractContext(text);
 
+        // Search tool results in user entry content blocks
+        if (entry is UserEntry user)
+        {
+            foreach (var block in user.ContentBlocks)
+            {
+                if (block is ToolResultBlock toolResult && toolResult.Content != null && IsMatch(toolResult.Content))
+                    return ExtractContext(toolResult.Content);
+            }
+        }
+
         // Also search tool calls
         if (entry is AssistantEntry assistant)
         {

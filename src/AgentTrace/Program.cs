@@ -15,7 +15,17 @@ if (args.Contains("--help") || args.Contains("-h"))
 
 if (args.Contains("--version") || args.Contains("-v"))
 {
-    Console.WriteLine("AgentTrace v0.2.0");
+    var version = "AgentTrace v0.2.0";
+    var infoVersion = System.Reflection.CustomAttributeExtensions
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(Program).Assembly)?.InformationalVersion;
+    // InformationalVersion format: "1.0.0+commithash"
+    if (infoVersion != null)
+    {
+        var plusIdx = infoVersion.IndexOf('+');
+        if (plusIdx >= 0)
+            version += $" ({infoVersion[(plusIdx + 1)..].AsSpan(0, Math.Min(7, infoVersion.Length - plusIdx - 1))})";
+    }
+    Console.WriteLine(version);
     return 0;
 }
 
@@ -56,6 +66,11 @@ string? tagLabel = null;
 string? untagSessionId = null;
 string? untagLabel = null;
 string? tagFilter = null;
+var autoSearchMode = false;
+var orientMode = false;
+var stampMode = false;
+string? stampMessage = null;
+int? lastTurns = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -144,6 +159,21 @@ for (int i = 0; i < args.Length; i++)
             untagSessionId = args[++i];
             untagLabel = args[++i];
             break;
+        case "--autosearch":
+            autoSearchMode = true;
+            break;
+        case "--orient":
+            orientMode = true;
+            break;
+        case "--last" when i + 1 < args.Length:
+            if (int.TryParse(args[++i], out var lastN)) lastTurns = lastN;
+            break;
+        case "--stamp":
+            stampMode = true;
+            // Optional message: consume next arg if it doesn't start with --
+            if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
+                stampMessage = args[++i];
+            break;
         case "--tags":
             // Optional label filter: --tags [label]
             if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
@@ -160,6 +190,10 @@ for (int i = 0; i < args.Length; i++)
             break;
     }
 }
+
+// Apply --last flag to turn slice (takes precedence if --turns not set)
+if (lastTurns.HasValue && !turnSlice.IsSet)
+    turnSlice = TurnSlice.LastN(lastTurns.Value);
 
 // Create provider — auto-detect project from cwd unless --all or --project given
 var baseProvider = customPath != null
@@ -238,6 +272,17 @@ if (untagSessionId != null && untagLabel != null)
     return 0;
 }
 
+// Handle --stamp (needs provider + project dir only, no session loading)
+if (stampMode)
+{
+    var projectLogPath = detectedProjectDir != null
+        ? baseProvider.GetProjectLogPath(detectedProjectDir)
+        : null;
+    var projectPath = targetDir ?? Environment.CurrentDirectory;
+    StampCommand.Execute(projectLogPath, projectPath, stampMessage);
+    return 0;
+}
+
 // Create terminal
 var console = new SystemConsole();
 var terminal = new AnsiTerminal(console);
@@ -276,7 +321,7 @@ if (followMode)
 var sessionManager = new SessionManager();
 
 // Load sessions
-var quietMode = plainMode || tsvMode || briefMode || timelineMode
+var quietMode = plainMode || tsvMode || briefMode || timelineMode || autoSearchMode || orientMode
     || dumpSessionId != null || infoSessionId != null || summarySessionId != null || tocSessionId != null;
 if (!quietMode)
     terminal.Append("Loading sessions...");
@@ -292,6 +337,21 @@ if (!quietMode)
 }
 
 // Plain-text commands — no ANSI, suitable for LLM consumption / piping
+if (orientMode)
+{
+    var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? targetDir ?? Environment.CurrentDirectory;
+    OrientCommand.Execute(sessionManager, projectPath, projectFilter, bookmarkStore, tagStore);
+    return 0;
+}
+
+if (autoSearchMode)
+{
+    // Resolve project path from first session's ProjectPath, or targetDir/cwd
+    var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? targetDir ?? Environment.CurrentDirectory;
+    AutoSearchCommand.Execute(sessionManager, projectPath, projectFilter, bookmarkStore, tagStore);
+    return 0;
+}
+
 if (briefMode)
 {
     DumpCommand.PrintBrief(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null, tagFilter != null ? tagStore : null);
@@ -495,13 +555,16 @@ void ShowHelp()
     Console.WriteLine("  agent-trace --dump <id>  Print full conversation as plain text");
     Console.WriteLine("  agent-trace --dump <id> --head 50   First 50 lines of dump");
     Console.WriteLine("  agent-trace --dump <id> --tail 50   Last 50 lines of dump");
-    Console.WriteLine("  agent-trace --dump <id> --turns 3   Last 3 turns only");
+    Console.WriteLine("  agent-trace --dump <id> --turns 5   Show turn 5 (1-indexed)");
     Console.WriteLine("  agent-trace --dump <id> --turns 9..13  Turns 9 through 13");
+    Console.WriteLine("  agent-trace --dump <id> --last 3    Last 3 turns");
     Console.WriteLine("  agent-trace --toc <id>              Table of contents (one line per turn)");
     Console.WriteLine("  agent-trace --dump <id> --speaker assistant  Only assistant text");
     Console.WriteLine("  agent-trace --dump <id> --compact   Collapse large tool results");
     Console.WriteLine("  agent-trace --summary <id>          Summarize via claude CLI");
     Console.WriteLine("  agent-trace --brief                 Digest of 5 most recent sessions");
+    Console.WriteLine("  agent-trace --orient                Single-call orientation digest");
+    Console.WriteLine("  agent-trace --autosearch            Auto-discover breadcrumbs + git context");
     Console.WriteLine("  agent-trace --timeline              Cross-session chronological view");
     Console.WriteLine("  agent-trace --timeline --after \"2h ago\"  Timeline filtered by time");
     Console.WriteLine("  agent-trace --bookmark <id>  Toggle bookmark on a session");
@@ -511,6 +574,7 @@ void ShowHelp()
     Console.WriteLine("  agent-trace --untag <id> <label> Remove a tag from a session");
     Console.WriteLine("  agent-trace --list --plain --tags        List with tags column");
     Console.WriteLine("  agent-trace --list --plain --tags <label>  Filter by tag label");
+    Console.WriteLine("  agent-trace --stamp [message]  Emit structured stamp (session + git state)");
     Console.WriteLine("  agent-trace --follow     Follow the active session (live tail)");
     Console.WriteLine("  agent-trace --watch \"pattern\"  Follow + exit on match (tripwire)");
     Console.WriteLine("  agent-trace --search \"term\"  Search across sessions");
@@ -528,10 +592,13 @@ void ShowHelp()
     Console.WriteLine("  --toc <session-id>       Print table of contents (one line per turn)");
     Console.WriteLine("  --head <N>               Output first N lines (use with --dump)");
     Console.WriteLine("  --tail <N>               Output last N lines (use with --dump)");
-    Console.WriteLine("  --turns <N|M..N>         Last N turns, or range M..N (1-indexed, inclusive)");
+    Console.WriteLine("  --turns <N|M..N>         Turn N (1-indexed), or range M..N (inclusive)");
+    Console.WriteLine("  --last <N>               Last N turns (use with --dump)");
     Console.WriteLine("  --speaker <user|assistant>  Filter entries by role (use with --dump)");
     Console.WriteLine("  --compact                Collapse large tool results to one line");
     Console.WriteLine("  --brief                  Compact digest of 5 most recent sessions");
+    Console.WriteLine("  --orient                 Single-call orientation digest (sessions + breadcrumbs)");
+    Console.WriteLine("  --autosearch             Search for breadcrumbs, commits, bookmarks, tags");
     Console.WriteLine("  --timeline               Cross-session chronological timeline");
     Console.WriteLine("  --after <time>           Filter timeline (\"2h ago\", \"1d ago\", date)");
     Console.WriteLine("  --grep <term>            Filter --list to sessions containing term");
@@ -540,6 +607,7 @@ void ShowHelp()
     Console.WriteLine("  --tag <id> <label>       Add a tag to a session");
     Console.WriteLine("  --untag <id> <label>     Remove a tag from a session");
     Console.WriteLine("  --tags [label]           Show tags column; optionally filter by label");
+    Console.WriteLine("  --stamp [message]        Emit structured «stamp» with session + git state");
     Console.WriteLine("  --summary <session-id>   Summarize conversation via claude --print");
     Console.WriteLine("  --skill                  Print LLM skill guide (SKILL.md)");
     Console.WriteLine("  -f, --follow             Follow the active session for this project");

@@ -3,39 +3,108 @@
 You have access to `agent-trace`, a CLI tool that reads Claude Code conversation logs.
 Use it to recover context after compaction or to understand what happened in a session.
 
+## Quick Orient
+
+```bash
+# Single-call context recovery — recent sessions, previous session detail, uncommitted state, breadcrumbs
+agent-trace --orient
+```
+
+For deeper investigation: `agent-trace --toc <id>` then `agent-trace --dump <id> --turns 3..5`.
+For breadcrumb search: `agent-trace --autosearch`.
+
 **Key insight:** You are both **producer** and **consumer** of log data. Your conversation text
 becomes searchable history. Write clues into your responses that future sessions can find —
 like how sourcelink embeds metadata in PDBs for later discovery.
 
-## Quick Start: "I've been compacted!"
+## Quick Start: Recovery after compaction
 
 ```bash
-# 1. Quick digest of 5 most recent sessions (goal + last message)
+# 1. Single-call orientation digest (recommended first command)
+agent-trace --orient
+
+# 2. If you need more detail, drill into specific sessions:
+agent-trace --toc <session-id>
+agent-trace --dump <session-id> --turns 3..5 --compact
+
+# 3. Deep investigation — breadcrumbs, commits, bookmarks
+agent-trace --autosearch
+
+# 4. Quick digest of 5 most recent sessions (goal + last message)
 agent-trace --brief
 
-# 2. List recent sessions for this project (markdown format)
-agent-trace --list --plain
-
-# 3. Get session metadata (line count, turns, duration, git commits)
-agent-trace --info <session-id>
-
-# 4. Table of contents — find the turn you need before dumping
-agent-trace --toc <session-id>
-
-# 5. Dump relevant turns
-agent-trace --dump <session-id> --turns 9..13 --compact
-
-# 6. Search for a specific topic across all sessions
+# 5. Search for a specific topic across all sessions
 agent-trace --list --plain --grep "migration"
 
-# 7. Cross-session timeline of recent activity
+# 6. Cross-session timeline of recent activity
 agent-trace --timeline --after "2h ago"
+```
+
+## Structured Stamps (Primary Breadcrumb)
+
+Use `--stamp` to emit a structured telemetry block with session ID, git state, and an optional
+message. Stamps use guillemet delimiters (`«stamp:...»`) that never appear naturally in code,
+giving zero false positives when searching.
+
+```bash
+# Emit a stamp with a message
+agent-trace --stamp "Completed authentication middleware"
+
+# Emit a stamp without a message (auto-only: session + git state)
+agent-trace --stamp
+```
+
+Output format:
+```
+«stamp:2026-02-13T08:15:00Z»
+  session: 3cb8313
+  commit: 173b29f Add continuation detection...
+  branch: main
+  staged: src/Foo.cs, src/Bar.cs
+  modified: src/Baz.cs
+  untracked: tests/new_test.cs
+  message: Completed authentication middleware
+«/stamp»
+```
+
+### When to stamp
+
+- **After commits** — capture the commit hash + what was done
+- **At milestones** — summarize progress at significant points
+- **Before ending a session** — leave a final breadcrumb for the next agent
+- **Before context compaction** — if you sense compaction is imminent, stamp first
+
+### Backtrace: linking plans to sessions
+
+When writing a plan (especially before session continuation or ending), record the current
+session ID so future agents can backtrace to the full discussion:
+
+```
+Plan written in session 3cb8313. Use `agent-trace --dump 3cb8313` to review the full discussion.
+```
+
+You can discover your session ID from the `session:` field in `--stamp` output, or from
+`agent-trace --brief` (the most recent active session).
+
+### Finding stamps
+
+Stamps are searchable via `--autosearch` (shows a dedicated Stamps section), and via grep:
+
+```bash
+agent-trace --autosearch                      # Stamps section with parsed fields
+agent-trace --list --plain --grep "«stamp:"   # Find sessions containing stamps
 ```
 
 ## Writing Breadcrumbs (Producer)
 
 Everything you write becomes searchable history. Leave clues that your future self (or a
 colleague agent in a different session) can find via `--grep`, `--search`, or `--dump`.
+
+### Structured stamps vs. ad-hoc breadcrumbs
+
+**Prefer `--stamp`** for structured telemetry — it captures session ID, git state, and timestamp
+automatically. Use ad-hoc breadcrumbs (below) as lightweight supplements when a full stamp
+would be overkill.
 
 ### What to write into conversations
 
@@ -93,14 +162,14 @@ Future agents can filter: `agent-trace --list --plain --tags migration`
 ### Orientation: what happened recently?
 
 ```bash
-# Compact digest — goal + last message for 5 recent sessions
-agent-trace --brief
+# Single-call digest — the best first command after compaction
+agent-trace --orient
 
-# Timeline view — all turns across sessions, chronologically
-agent-trace --timeline --after "1d ago"
-
-# Full session list with details
-agent-trace --list --plain
+# For deeper investigation:
+agent-trace --autosearch                      # breadcrumbs, commits, milestones, decisions
+agent-trace --brief                           # goal + last message for 5 recent sessions
+agent-trace --timeline --after "1d ago"       # cross-session chronological timeline
+agent-trace --list --plain                    # full session list with details
 ```
 
 ### Finding specific information
@@ -129,11 +198,14 @@ agent-trace --info <session-id>
 # Table of contents — one line per turn, find what matters
 agent-trace --toc <session-id>
 
-# Dump specific turns (1-indexed, inclusive range)
+# Dump a specific turn (1-indexed)
+agent-trace --dump <session-id> --turns 5
+
+# Dump a range of turns (1-indexed, inclusive)
 agent-trace --dump <session-id> --turns 9..13
 
 # Last N turns (most recent context)
-agent-trace --dump <session-id> --turns 5
+agent-trace --dump <session-id> --last 3
 
 # Assistant prose only (skip tool calls, thinking, results)
 agent-trace --dump <session-id> --speaker assistant
@@ -172,6 +244,26 @@ agent-trace --dump <id> --turns 3..7 --compact
 ```
 
 ## Commands Reference
+
+### Orient
+
+```bash
+agent-trace --orient
+```
+
+Single-call orientation digest. Shows: recent sessions (ID, age, status, goal), previous session
+detail (turns, duration, tools, commits, turn-by-turn summary), uncommitted git state (staged,
+modified, new files), and breadcrumbs (stamps, commit mentions). Target: under 1000 tokens.
+
+### Auto-search
+
+```bash
+agent-trace --autosearch
+```
+
+Automatically gathers context and searches for breadcrumbs. Shows: git branch and recent
+commits, which sessions mention which commit hashes, bookmarked/tagged sessions, and
+structured breadcrumbs (Milestone, Decision, Root cause). Best for deep investigation after `--orient`.
 
 ### Brief digest
 
@@ -215,8 +307,9 @@ One-line summary per turn. Continuation sessions show `[continued]` prefix.
 
 ```bash
 agent-trace --dump <session-id>
-agent-trace --dump <id> --turns 5             # last 5 turns
-agent-trace --dump <id> --turns 9..13         # range (1-indexed)
+agent-trace --dump <id> --turns 5             # turn 5 (1-indexed)
+agent-trace --dump <id> --turns 9..13         # range (1-indexed, inclusive)
+agent-trace --dump <id> --last 3              # last 3 turns
 agent-trace --dump <id> --speaker assistant   # prose only
 agent-trace --dump <id> --compact             # collapse tool results + continuations
 agent-trace --dump <id> --head 200            # first 200 lines
@@ -246,6 +339,15 @@ agent-trace --search "error|fail"             # regex supported
 agent-trace --summary <session-id>            # pipes to claude --print
 agent-trace --summary <id> --turns 5
 ```
+
+### Stamp
+
+```bash
+agent-trace --stamp "Completed auth middleware"  # with message
+agent-trace --stamp                              # auto-only (session + git)
+```
+
+Emits a `«stamp:...»` block with session ID, git state, and optional message.
 
 ### Bookmarks and Tags
 
@@ -291,10 +393,10 @@ Implement the feature described above
 
 ## Tips
 
-- All text output (`--plain`, `--dump`, `--info`, `--brief`, `--timeline`, `--summary`) has zero ANSI codes — safe for piping
+- All text output (`--plain`, `--dump`, `--info`, `--brief`, `--timeline`, `--summary`, `--orient`) has zero ANSI codes — safe for piping
 - Session IDs support prefix matching — you don't need the full UUID
 - `--list --plain` scopes to the current directory by default; use `-C <dir>` or `--all` to widen
-- Use `--brief` first for quick orientation, then drill into specific sessions
+- Use `--orient` first for quick orientation, then drill into specific sessions
 - Use `--toc` to find turns before dumping — saves tokens
 - Use `--compact` to collapse continuation preambles and large tool results
 - Combine with Unix tools: `wc -l`, `grep`, `head`, `tail`, `less`
