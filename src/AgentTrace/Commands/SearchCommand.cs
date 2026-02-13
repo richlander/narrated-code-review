@@ -1,7 +1,7 @@
-using System.Text.RegularExpressions;
 using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
 using AgentLogs.Services;
+using AgentTrace.Services;
 
 namespace AgentTrace.Commands;
 
@@ -26,15 +26,7 @@ public static class SearchCommand
                 .ToList();
         }
 
-        Regex? regex = null;
-        try
-        {
-            regex = new Regex(searchTerm, RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        }
-        catch (RegexParseException)
-        {
-            // Fall back to literal search
-        }
+        var matcher = new EntryMatcher(searchTerm);
 
         terminal.AppendLine();
         terminal.SetColor(TerminalColor.Blue);
@@ -54,7 +46,7 @@ public static class SearchCommand
 
             foreach (var entry in entries)
             {
-                var matchContext = FindMatch(entry, searchTerm, regex);
+                var matchContext = matcher.FindMatch(entry);
                 if (matchContext != null)
                 {
                     sessionMatches.Add((entry, matchContext));
@@ -106,65 +98,6 @@ public static class SearchCommand
         terminal.AppendLine($"  {totalMatches} match(es) across {sessions.Count} session(s)");
         terminal.ResetColor();
         terminal.AppendLine();
-    }
-
-    private static string? FindMatch(Entry entry, string searchTerm, Regex? regex)
-    {
-        string? text = entry switch
-        {
-            UserEntry u => u.Content,
-            AssistantEntry a => a.TextContent,
-            _ => null
-        };
-
-        if (text != null && IsMatch(text, searchTerm, regex))
-            return ExtractContext(text, searchTerm, regex);
-
-        // Also search tool calls
-        if (entry is AssistantEntry assistant)
-        {
-            foreach (var tool in assistant.ToolUses)
-            {
-                var toolText = $"{tool.Name}: {tool.FilePath ?? tool.Command ?? tool.Content ?? ""}";
-                if (IsMatch(toolText, searchTerm, regex))
-                    return ExtractContext(toolText, searchTerm, regex);
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsMatch(string text, string searchTerm, Regex? regex)
-    {
-        if (regex != null)
-            return regex.IsMatch(text);
-        return text.Contains(searchTerm, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string ExtractContext(string text, string searchTerm, Regex? regex)
-    {
-        int matchIndex;
-        if (regex != null)
-        {
-            var match = regex.Match(text);
-            matchIndex = match.Success ? match.Index : 0;
-        }
-        else
-        {
-            matchIndex = text.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (matchIndex < 0) matchIndex = 0;
-
-        // Extract a window around the match
-        var start = Math.Max(0, matchIndex - 30);
-        var end = Math.Min(text.Length, matchIndex + searchTerm.Length + 40);
-        var context = text[start..end].Replace('\n', ' ').Replace('\r', ' ');
-
-        if (start > 0) context = "..." + context;
-        if (end < text.Length) context += "...";
-
-        return context;
     }
 
     private static string Truncate(string text, int maxLength)

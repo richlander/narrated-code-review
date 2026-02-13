@@ -3,142 +3,256 @@
 You have access to `agent-trace`, a CLI tool that reads Claude Code conversation logs.
 Use it to recover context after compaction or to understand what happened in a session.
 
+**Key insight:** You are both **producer** and **consumer** of log data. Your conversation text
+becomes searchable history. Write clues into your responses that future sessions can find —
+like how sourcelink embeds metadata in PDBs for later discovery.
+
 ## Quick Start: "I've been compacted!"
 
 ```bash
-# 1. List recent sessions for this project (markdown format)
-#    Run from the project directory, or use -C to specify it
-agent-trace --list --plain
-agent-trace --list --plain -C /path/to/project
+# 1. Quick digest of 5 most recent sessions (goal + last message)
+agent-trace --brief
 
-# 2. Get session metadata (line count, turns, duration) without dumping content
+# 2. List recent sessions for this project (markdown format)
+agent-trace --list --plain
+
+# 3. Get session metadata (line count, turns, duration, git commits)
 agent-trace --info <session-id>
 
-# 3. Dump the full conversation for a session
-agent-trace --dump <session-id>
-
-# 4. Dump only the last N turns (most useful for recent context)
-agent-trace --dump <session-id> --turns 5
-
-# 5. Dump a specific range of turns (1-indexed, inclusive)
-agent-trace --dump <session-id> --turns 9..13
-
-# 6. Get a table of contents (one line per turn — find the turn you need)
+# 4. Table of contents — find the turn you need before dumping
 agent-trace --toc <session-id>
 
-# 7. Get only assistant prose (skip tools, thinking, system entries)
-agent-trace --dump <session-id> --speaker assistant
+# 5. Dump relevant turns
+agent-trace --dump <session-id> --turns 9..13 --compact
 
-# 8. Compact mode — collapse large tool results to one-line summaries
-agent-trace --dump <session-id> --compact
+# 6. Search for a specific topic across all sessions
+agent-trace --list --plain --grep "migration"
 
-# 9. Combine flags for surgical extraction
-agent-trace --dump <session-id> --turns 9..13 --speaker assistant --compact
-
-# 10. Get first/last N lines of a dump
-agent-trace --dump <session-id> --head 200
-agent-trace --dump <session-id> --tail 100
-
-# 11. Summarize a session via claude CLI (requires claude on PATH)
-agent-trace --summary <session-id>
-agent-trace --summary <session-id> --turns 5
+# 7. Cross-session timeline of recent activity
+agent-trace --timeline --after "2h ago"
 ```
 
-## Commands
+## Writing Breadcrumbs (Producer)
+
+Everything you write becomes searchable history. Leave clues that your future self (or a
+colleague agent in a different session) can find via `--grep`, `--search`, or `--dump`.
+
+### What to write into conversations
+
+**Commit hashes** — After committing, echo the short hash in your response text:
+```
+Committed as abc1234: "Add user authentication middleware"
+```
+Future agents can `--grep "abc1234"` to find when and why that commit was made.
+
+**Decision records** — When making architectural choices, state them clearly:
+```
+Decision: Using JWT tokens (not sessions) because the API is stateless.
+Alternatives considered: session cookies, OAuth tokens.
+```
+
+**Milestone markers** — At significant points, write a clear summary:
+```
+Milestone: Authentication system complete. All 12 tests passing.
+Files changed: src/Auth/, src/Middleware/AuthMiddleware.cs, tests/Auth/
+```
+
+**Error resolution notes** — When you fix a tricky bug, document the root cause:
+```
+Root cause: The DbContext was being disposed before the async query completed.
+Fix: Changed to scoped lifetime in DI container (AddScoped instead of AddTransient).
+```
+
+**Cross-references** — Link related work:
+```
+This continues the work from session 1f8fc04 (database migration).
+Related PR: #42 (schema changes)
+```
+
+### What makes good breadcrumbs
+
+- **Searchable terms**: Use specific names, hashes, error messages — not just "fixed the bug"
+- **Self-contained context**: Include enough that `--grep` hit + surrounding lines tells the story
+- **Structured patterns**: Consistent prefixes like `Decision:`, `Milestone:`, `Root cause:` make searching reliable
+- **File paths**: Mention full paths so `--grep "AuthMiddleware"` finds relevant sessions
+
+### Tagging sessions
+
+Tag sessions to categorize completed work for future discovery:
+
+```bash
+agent-trace --tag <session-id> feature
+agent-trace --tag <session-id> migration
+agent-trace --tag <session-id> bugfix
+```
+
+Future agents can filter: `agent-trace --list --plain --tags migration`
+
+## Recovering Context (Consumer)
+
+### Orientation: what happened recently?
+
+```bash
+# Compact digest — goal + last message for 5 recent sessions
+agent-trace --brief
+
+# Timeline view — all turns across sessions, chronologically
+agent-trace --timeline --after "1d ago"
+
+# Full session list with details
+agent-trace --list --plain
+```
+
+### Finding specific information
+
+```bash
+# Search for a topic across all sessions (regex supported)
+agent-trace --list --plain --grep "database migration"
+agent-trace --list --plain --grep "error|fail"
+
+# Search with ANSI output (shows match context)
+agent-trace --search "AuthMiddleware"
+
+# Find sessions tagged with a label
+agent-trace --list --plain --tags bugfix
+
+# Find bookmarked sessions (human-curated important ones)
+agent-trace --list --plain --bookmarks
+```
+
+### Drilling into a session
+
+```bash
+# Metadata first — gauge size before dumping
+agent-trace --info <session-id>
+
+# Table of contents — one line per turn, find what matters
+agent-trace --toc <session-id>
+
+# Dump specific turns (1-indexed, inclusive range)
+agent-trace --dump <session-id> --turns 9..13
+
+# Last N turns (most recent context)
+agent-trace --dump <session-id> --turns 5
+
+# Assistant prose only (skip tool calls, thinking, results)
+agent-trace --dump <session-id> --speaker assistant
+
+# Compact mode — collapse tool results + continuation preambles
+agent-trace --dump <session-id> --compact
+
+# Combine flags for surgical extraction
+agent-trace --dump <session-id> --turns 9..13 --speaker assistant --compact
+
+# First/last N lines of a dump
+agent-trace --dump <session-id> --head 200
+agent-trace --dump <session-id> --tail 100
+```
+
+### Workflow: reconstruct multi-day project history
+
+```bash
+# 1. See all sessions for a project
+agent-trace --list --plain -C /path/to/project
+
+# 2. Get the timeline of recent work
+agent-trace --timeline --after "2d ago"
+
+# 3. Check bookmarked/tagged sessions first
+agent-trace --list --plain --bookmarks
+agent-trace --list --plain --tags feature
+
+# 4. Grep for specific topics
+agent-trace --list --plain --grep "schema change"
+
+# 5. Drill into relevant sessions
+agent-trace --info <id>          # metadata + git commits
+agent-trace --toc <id>           # find the right turns
+agent-trace --dump <id> --turns 3..7 --compact
+```
+
+## Commands Reference
+
+### Brief digest
+
+```bash
+agent-trace --brief
+```
+
+Compact digest of 5 most recent sessions. Shows ID, age, status, turn count, goal (first
+user message, skipping continuation preambles), and last assistant message. Target: ~2K tokens.
 
 ### List sessions
 
 ```bash
-# Markdown format — ideal for LLM reading
-agent-trace --list --plain
+agent-trace --list --plain                    # markdown format
 agent-trace --list --plain -C /path/to/project
-
-# Tab-separated — ideal for parsing/scripting
-agent-trace --list --tsv
-
-# Output columns: ID (7-char), Status, Project, Messages, Tools, Duration, Date
+agent-trace --list --tsv                      # tab-separated
+agent-trace --list --plain --grep "term"      # filter by content match
+agent-trace --list --plain --tags             # show tags column
+agent-trace --list --plain --tags feature     # filter by tag
+agent-trace --list --plain --bookmarks        # bookmarked only
 ```
 
-### Session info (metadata only)
+### Session info
 
 ```bash
-# Quick overview without dumping content — shows line count estimate
 agent-trace --info <session-id>
-
-# Output: ID, Project, Status, Started, Duration, Turns, Messages, Tool calls, Lines
 ```
 
-### Dump a conversation
-
-```bash
-# Print full conversation as plain text to stdout
-agent-trace --dump <session-id>
-
-# Session ID prefix matching works
-agent-trace --dump abc123
-
-# Last N turns only (most common for context recovery)
-agent-trace --dump <session-id> --turns 3
-
-# Specific turn range (1-indexed, inclusive)
-agent-trace --dump <session-id> --turns 9..13
-
-# First/last N lines
-agent-trace --dump <session-id> --head 200
-agent-trace --dump <session-id> --tail 100
-
-# Scope to a specific project directory
-agent-trace --dump <session-id> -C /path/to/project
-```
+Shows: ID, Project, Status, Started, Duration, Turns, Messages, Tool calls, Lines,
+Bookmarked, Tags, Type (continuation), Branch, Commits during session.
 
 ### Table of contents
 
 ```bash
-# One-line summary per turn — find the turn you need before dumping
 agent-trace --toc <session-id>
-
-# Output: Turn number, Messages, Tools, Duration, Content preview
 ```
 
-### Speaker filter
+One-line summary per turn. Continuation sessions show `[continued]` prefix.
+
+### Dump conversation
 
 ```bash
-# Only assistant prose (skip tool calls, thinking blocks, tool results)
-agent-trace --dump <session-id> --speaker assistant
-
-# Only user messages (skip assistant responses)
-agent-trace --dump <session-id> --speaker user
-
-# Combine with turn range
-agent-trace --dump <session-id> --turns 1..5 --speaker user
+agent-trace --dump <session-id>
+agent-trace --dump <id> --turns 5             # last 5 turns
+agent-trace --dump <id> --turns 9..13         # range (1-indexed)
+agent-trace --dump <id> --speaker assistant   # prose only
+agent-trace --dump <id> --compact             # collapse tool results + continuations
+agent-trace --dump <id> --head 200            # first 200 lines
+agent-trace --dump <id> --tail 100            # last 100 lines
 ```
 
-### Compact mode
+### Timeline
 
 ```bash
-# Collapse tool results > 200 chars to one-line summaries
-agent-trace --dump <session-id> --compact
-
-# Great for sessions heavy with sub-agent Task results
-agent-trace --dump <session-id> --turns 9..13 --speaker assistant --compact
+agent-trace --timeline                        # all turns, all sessions
+agent-trace --timeline --after "2h ago"       # relative time filter
+agent-trace --timeline --after "1d ago"
+agent-trace --timeline --after "2026-02-12"   # absolute date
+agent-trace --timeline --project my-project   # scope to project
 ```
 
-### Summarize a session
+### Search
 
 ```bash
-# Pipes conversation to claude --print for a concise summary
-agent-trace --summary <session-id>
-
-# Summarize only recent turns
-agent-trace --summary <session-id> --turns 5
+agent-trace --search "term"                   # ANSI output with context
+agent-trace --search "error|fail"             # regex supported
 ```
 
-### Search across sessions
+### Summarize
 
 ```bash
-# Find sessions mentioning a term (supports regex)
-agent-trace --search "migration"
-agent-trace --search "error|fail" -C /path/to/project
+agent-trace --summary <session-id>            # pipes to claude --print
+agent-trace --summary <id> --turns 5
+```
+
+### Bookmarks and Tags
+
+```bash
+agent-trace --bookmark <session-id>           # toggle bookmark
+agent-trace --tag <id> <label>                # add tag
+agent-trace --untag <id> <label>              # remove tag
 ```
 
 ## Output Format
@@ -167,38 +281,21 @@ The `--dump` output is plain text with this structure:
 ...
 ```
 
-## Tips
-
-- All `--plain`, `--dump`, `--info`, and `--summary` output goes to stdout with zero ANSI codes
-- `--list --plain` outputs markdown (readable by humans and LLMs); use `--tsv` for tab-separated parsing
-- **Important**: `--list --plain` scopes to the current directory by default.
-  Use `-C <dir>` to target a specific project, or `--all` for all projects.
-  A warning is printed to stderr if no sessions match the current directory.
-- Session IDs support prefix matching — you don't need the full UUID
-- Use `--info` to gauge dump size before committing to a full `--dump`
-- Use `--toc <id>` to scan the session and find which turns matter before dumping
-- Use `--turns N` for last N turns, or `--turns M..N` for a specific range (1-indexed, inclusive)
-- Use `--speaker assistant` to get only the prose — skip tool calls and results
-- Use `--compact` to collapse large tool results (e.g. sub-agent Task output) to one line
-- Combine flags: `--dump <id> --turns 9..13 --speaker assistant --compact`
-- Combine with standard Unix tools: `wc -l`, `grep`, `head`, `tail`, `less`
-
-## Bookmarks
-
-Bookmarks let the human mark important sessions and the agent discover them.
-
-```bash
-# Toggle bookmark on a session
-agent-trace --bookmark <session-id>
-
-# List only bookmarked sessions
-agent-trace --list --plain --bookmarks
-
-# Workflow: recover context from bookmarked sessions
-agent-trace --list --plain --bookmarks
-agent-trace --dump <bookmarked-id> --turns 5
+In compact mode, continuation preambles are collapsed:
+```
+--- Turn 1 ---
+[user]
+[continuation summary: 3,456 chars]
+Implement the feature described above
 ```
 
-In the interactive pager, press `b` to toggle a bookmark. The status line shows `★` when a session is bookmarked. In the session picker, bookmarked sessions display `★` in the list.
+## Tips
 
-Storage: `.bookmarks` file in the project log directory (one session ID per line).
+- All text output (`--plain`, `--dump`, `--info`, `--brief`, `--timeline`, `--summary`) has zero ANSI codes — safe for piping
+- Session IDs support prefix matching — you don't need the full UUID
+- `--list --plain` scopes to the current directory by default; use `-C <dir>` or `--all` to widen
+- Use `--brief` first for quick orientation, then drill into specific sessions
+- Use `--toc` to find turns before dumping — saves tokens
+- Use `--compact` to collapse continuation preambles and large tool results
+- Combine with Unix tools: `wc -l`, `grep`, `head`, `tail`, `less`
+- Write searchable breadcrumbs (commit hashes, decisions, milestones) — your future self will thank you

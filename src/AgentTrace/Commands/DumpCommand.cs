@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using AgentLogs.Domain;
 using AgentLogs.Services;
 using AgentTrace.Services;
@@ -65,13 +67,34 @@ public static class DumpCommand
     /// <summary>
     /// Prints a markdown session list via Markout.
     /// </summary>
-    public static void ListSessionsMarkdown(SessionManager sessionManager, string? projectFilter = null, string? projectDir = null, BookmarkStore? bookmarkStore = null)
+    public static void ListSessionsMarkdown(SessionManager sessionManager, string? projectFilter = null,
+        string? projectDir = null, BookmarkStore? bookmarkStore = null, string? grepTerm = null,
+        TagStore? tagStore = null, string? tagFilter = null)
     {
         var sessions = FilterSessions(sessionManager, projectFilter);
         var bookmarks = bookmarkStore?.Load();
+        var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
 
         if (bookmarks != null)
             sessions = sessions.Where(s => bookmarks.Contains(s.Id)).ToList();
+
+        if (tagFilter != null && allTags != null)
+            sessions = sessions.Where(s => allTags.TryGetValue(s.Id, out var t) && t.Contains(tagFilter, StringComparer.OrdinalIgnoreCase)).ToList();
+
+        // Grep filtering: only show sessions containing the term
+        EntryMatcher? matcher = grepTerm != null ? new EntryMatcher(grepTerm) : null;
+        Dictionary<string, int>? matchCounts = null;
+        if (matcher != null)
+        {
+            matchCounts = new Dictionary<string, int>();
+            sessions = sessions.Where(s =>
+            {
+                var entries = sessionManager.GetSessionEntries(s.Id);
+                var count = matcher.CountMatches(entries);
+                if (count > 0) matchCounts[s.Id] = count;
+                return count > 0;
+            }).ToList();
+        }
 
         var writer = new MarkoutWriter(Console.Out);
 
@@ -82,11 +105,16 @@ public static class DumpCommand
 
         if (projectDir != null)
             writer.WriteField("Scope", projectDir);
+        if (grepTerm != null)
+            writer.WriteField("Grep", grepTerm);
 
-        if (bookmarks != null)
-            writer.WriteTableStart("★", "ID", "Status", "Project", "Messages", "Tools", "Duration", "Date");
-        else
-            writer.WriteTableStart("ID", "Status", "Project", "Messages", "Tools", "Duration", "Date");
+        // Build header columns
+        var headers = new List<string>();
+        if (bookmarks != null) headers.Add("★");
+        headers.AddRange(["ID", "Status", "Project", "Messages", "Tools", "Duration", "Date"]);
+        if (allTags != null) headers.Add("Tags");
+        if (matchCounts != null) headers.Add("Matches");
+        writer.WriteTableStart(headers.ToArray());
 
         foreach (var session in sessions)
         {
@@ -97,10 +125,12 @@ public static class DumpCommand
             var duration = FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
-            if (bookmarks != null)
-                writer.WriteTableRow("★", shortId, status, project, messages, session.ToolCallCount.ToString(), duration, date);
-            else
-                writer.WriteTableRow(shortId, status, project, messages, session.ToolCallCount.ToString(), duration, date);
+            var row = new List<string>();
+            if (bookmarks != null) row.Add("★");
+            row.AddRange([shortId, status, project, messages, session.ToolCallCount.ToString(), duration, date]);
+            if (allTags != null) row.Add(allTags.TryGetValue(session.Id, out var t) ? string.Join(", ", t) : "");
+            if (matchCounts != null) row.Add(matchCounts.TryGetValue(session.Id, out var c) ? c.ToString() : "0");
+            writer.WriteTableRow(row.ToArray());
         }
 
         writer.WriteTableEnd();
@@ -110,18 +140,40 @@ public static class DumpCommand
     /// <summary>
     /// Prints a tab-separated session list (original format).
     /// </summary>
-    public static void ListSessionsTsv(SessionManager sessionManager, string? projectFilter = null, BookmarkStore? bookmarkStore = null)
+    public static void ListSessionsTsv(SessionManager sessionManager, string? projectFilter = null,
+        BookmarkStore? bookmarkStore = null, string? grepTerm = null,
+        TagStore? tagStore = null, string? tagFilter = null)
     {
         var sessions = FilterSessions(sessionManager, projectFilter);
         var bookmarks = bookmarkStore?.Load();
+        var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
 
         if (bookmarks != null)
             sessions = sessions.Where(s => bookmarks.Contains(s.Id)).ToList();
 
-        if (bookmarks != null)
-            Console.Out.WriteLine("★\tID\tStatus\tProject\tMessages\tTools\tDuration\tDate");
-        else
-            Console.Out.WriteLine("ID\tStatus\tProject\tMessages\tTools\tDuration\tDate");
+        if (tagFilter != null && allTags != null)
+            sessions = sessions.Where(s => allTags.TryGetValue(s.Id, out var t) && t.Contains(tagFilter, StringComparer.OrdinalIgnoreCase)).ToList();
+
+        EntryMatcher? matcher = grepTerm != null ? new EntryMatcher(grepTerm) : null;
+        Dictionary<string, int>? matchCounts = null;
+        if (matcher != null)
+        {
+            matchCounts = new Dictionary<string, int>();
+            sessions = sessions.Where(s =>
+            {
+                var entries = sessionManager.GetSessionEntries(s.Id);
+                var count = matcher.CountMatches(entries);
+                if (count > 0) matchCounts[s.Id] = count;
+                return count > 0;
+            }).ToList();
+        }
+
+        var header = "";
+        if (bookmarks != null) header += "★\t";
+        header += "ID\tStatus\tProject\tMessages\tTools\tDuration\tDate";
+        if (allTags != null) header += "\tTags";
+        if (matchCounts != null) header += "\tMatches";
+        Console.Out.WriteLine(header);
 
         foreach (var session in sessions)
         {
@@ -131,17 +183,20 @@ public static class DumpCommand
             var duration = FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
-            if (bookmarks != null)
-                Console.Out.WriteLine($"★\t{session.Id}\t{status}\t{project}\t{messages}\t{session.ToolCallCount}\t{duration}\t{date}");
-            else
-                Console.Out.WriteLine($"{session.Id}\t{status}\t{project}\t{messages}\t{session.ToolCallCount}\t{duration}\t{date}");
+            var row = "";
+            if (bookmarks != null) row += "★\t";
+            row += $"{session.Id}\t{status}\t{project}\t{messages}\t{session.ToolCallCount}\t{duration}\t{date}";
+            if (allTags != null) row += "\t" + (allTags.TryGetValue(session.Id, out var t) ? string.Join(",", t) : "");
+            if (matchCounts != null) row += "\t" + (matchCounts.TryGetValue(session.Id, out var c) ? c.ToString() : "0");
+            Console.Out.WriteLine(row);
         }
     }
 
     /// <summary>
     /// Prints session metadata as markdown without dumping content.
     /// </summary>
-    public static void PrintInfo(SessionManager sessionManager, string sessionId, TurnSlice turnSlice = default)
+    public static void PrintInfo(SessionManager sessionManager, string sessionId,
+        TurnSlice turnSlice = default, BookmarkStore? bookmarkStore = null, TagStore? tagStore = null)
     {
         var (session, conversation) = ResolveSession(sessionManager, sessionId);
         if (session == null || conversation == null)
@@ -164,7 +219,77 @@ public static class DumpCommand
         writer.WriteField("Tool calls", session.ToolCallCount);
         writer.WriteField("Lines", $"{lineCount} (estimated from dump)");
 
+        // Bookmark status
+        if (bookmarkStore?.IsBookmarked(session.Id) == true)
+            writer.WriteField("Bookmarked", "yes");
+
+        // Tags
+        var tags = tagStore?.GetTags(session.Id);
+        if (tags != null && tags.Count > 0)
+            writer.WriteField("Tags", string.Join(", ", tags.Order()));
+
+        // Continuation detection
+        var firstUserMsg = conversation.Turns
+            .Select(t => t.UserMessage)
+            .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
+        if (ContinuationDetector.IsContinuation(firstUserMsg))
+            writer.WriteField("Type", "continuation");
+
+        // Git branch from entry metadata
+        var gitBranch = conversation.Entries
+            .Select(e => e.GitBranch)
+            .FirstOrDefault(b => !string.IsNullOrEmpty(b));
+        if (gitBranch != null)
+            writer.WriteField("Branch", gitBranch);
+
+        // Git commits during session (Feature 7)
+        PrintGitCommits(writer, session);
+
         writer.Flush();
+    }
+
+    /// <summary>
+    /// Runs git log for the session's time range and prints commits.
+    /// </summary>
+    private static void PrintGitCommits(MarkoutWriter writer, Session session)
+    {
+        if (string.IsNullOrEmpty(session.ProjectPath))
+            return;
+
+        try
+        {
+            var after = session.StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+            var before = session.LastActivityTime.ToUniversalTime().AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+            var psi = new ProcessStartInfo("git")
+            {
+                Arguments = $"log --oneline --after=\"{after}\" --before=\"{before}\"",
+                WorkingDirectory = session.ProjectPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi);
+            if (process == null) return;
+
+            var output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(5000);
+
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+                return;
+
+            writer.WriteHeading(2, "Commits during session");
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                writer.WriteListItem(line.Trim());
+            }
+        }
+        catch
+        {
+            // Git not available or not a git repo — silent failure
+        }
     }
 
     /// <summary>
@@ -307,19 +432,121 @@ public static class DumpCommand
 
             // Content preview: first user message, or first assistant text
             var preview = turn.UserMessage;
+            var contPrefix = "";
+            if (preview != null)
+            {
+                var contInfo = ContinuationDetector.Parse(preview);
+                if (contInfo.IsContinuation)
+                {
+                    contPrefix = "[continued] ";
+                    // Use substantive content, or fall back to next user entry / assistant text
+                    preview = contInfo.SubstantiveContent;
+                    if (string.IsNullOrWhiteSpace(preview))
+                    {
+                        preview = turn.Entries.OfType<UserEntry>().Skip(1)
+                            .Select(u => u.Content)
+                            .FirstOrDefault(c => !string.IsNullOrWhiteSpace(c));
+                    }
+                    if (string.IsNullOrWhiteSpace(preview))
+                    {
+                        preview = turn.AssistantMessages
+                            .Select(a => a.TextContent)
+                            .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+                    }
+                }
+            }
             if (string.IsNullOrWhiteSpace(preview))
             {
                 preview = turn.AssistantMessages
                     .Select(a => a.TextContent)
                     .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
             }
-            preview = Truncate(preview ?? "", 60);
+            preview = contPrefix + Truncate(preview ?? "", 60 - contPrefix.Length);
 
             writer.WriteTableRow(turnNum, messages, tools, duration, preview);
         }
 
         writer.WriteTableEnd();
         writer.Flush();
+    }
+
+    /// <summary>
+    /// Prints a compact digest of the N most recent sessions.
+    /// </summary>
+    public static void PrintBrief(SessionManager sessionManager, string? projectFilter = null,
+        BookmarkStore? bookmarkStore = null, TagStore? tagStore = null, int count = 5)
+    {
+        var sessions = FilterSessions(sessionManager, projectFilter);
+        var bookmarks = bookmarkStore?.Load();
+        var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
+
+        // Take most recent N
+        sessions = sessions.Take(count).ToList();
+
+        var writer = new MarkoutWriter(Console.Out);
+        writer.WriteHeading(1, $"Recent Sessions ({sessions.Count})");
+
+        foreach (var session in sessions)
+        {
+            var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
+            var status = session.IsActive ? "active" : "done";
+            var age = FormatAge(DateTime.UtcNow - session.StartTime);
+            var bookmark = bookmarks?.Contains(session.Id) == true ? " ★" : "";
+            var tags = allTags != null && allTags.TryGetValue(session.Id, out var t) ? $" [{string.Join(", ", t)}]" : "";
+
+            writer.WriteHeading(2, $"{shortId}{bookmark}{tags}");
+            writer.WriteCompactFields(
+                new MarkoutField("Age", age),
+                new MarkoutField("Status", status),
+                new MarkoutField("Turns", GetTurnCount(sessionManager, session.Id).ToString()),
+                new MarkoutField("Messages", $"{session.UserMessageCount}u/{session.AssistantMessageCount}a"),
+                new MarkoutField("Tools", session.ToolCallCount.ToString()));
+
+            // Goal: first real user message (skip continuation preambles)
+            var entries = sessionManager.GetSessionEntries(session.Id);
+            var conversation = new Conversation(session.Id, entries);
+
+            var goalMessage = conversation.Turns
+                .Select(t2 => t2.UserMessage)
+                .Where(m => !string.IsNullOrWhiteSpace(m))
+                .Select(m =>
+                {
+                    var cont = ContinuationDetector.Parse(m);
+                    return cont.IsContinuation ? cont.SubstantiveContent : m;
+                })
+                .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
+
+            if (goalMessage != null)
+                writer.WriteField("Goal", Truncate(goalMessage, 100));
+
+            // Last: last assistant message
+            var lastAssistant = conversation.Turns
+                .SelectMany(t2 => t2.AssistantMessages)
+                .Select(a => a.TextContent)
+                .LastOrDefault(t2 => !string.IsNullOrWhiteSpace(t2));
+
+            if (lastAssistant != null)
+                writer.WriteField("Last", Truncate(lastAssistant, 100));
+        }
+
+        writer.Flush();
+    }
+
+    private static int GetTurnCount(SessionManager sessionManager, string sessionId)
+    {
+        var entries = sessionManager.GetSessionEntries(sessionId);
+        if (entries.Count == 0) return 0;
+        var conversation = new Conversation(sessionId, entries);
+        return conversation.Turns.Count;
+    }
+
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age.TotalMinutes < 60)
+            return $"{(int)age.TotalMinutes}m ago";
+        if (age.TotalHours < 24)
+            return $"{(int)age.TotalHours}h ago";
+        return $"{(int)age.TotalDays}d ago";
     }
 
     private static string Truncate(string text, int maxLength)
@@ -367,7 +594,17 @@ public static class DumpCommand
         if (!string.IsNullOrWhiteSpace(user.Content))
         {
             output.WriteLine("[user]");
-            output.WriteLine(user.Content);
+            if (compact && ContinuationDetector.IsContinuation(user.Content))
+            {
+                var contInfo = ContinuationDetector.Parse(user.Content);
+                output.WriteLine($"[continuation summary: {contInfo.PreambleCharCount:N0} chars]");
+                if (!string.IsNullOrWhiteSpace(contInfo.SubstantiveContent))
+                    output.WriteLine(contInfo.SubstantiveContent);
+            }
+            else
+            {
+                output.WriteLine(user.Content);
+            }
             output.WriteLine();
         }
 

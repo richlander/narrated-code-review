@@ -15,7 +15,7 @@ if (args.Contains("--help") || args.Contains("-h"))
 
 if (args.Contains("--version") || args.Contains("-v"))
 {
-    Console.WriteLine("AgentTrace v0.1.0");
+    Console.WriteLine("AgentTrace v0.2.0");
     return 0;
 }
 
@@ -47,6 +47,15 @@ string? speakerFilter = null;
 var compactMode = false;
 string? bookmarkSessionId = null;
 var bookmarksFilter = false;
+string? grepTerm = null;
+var briefMode = false;
+var timelineMode = false;
+string? afterFilter = null;
+string? tagSessionId = null;
+string? tagLabel = null;
+string? untagSessionId = null;
+string? untagLabel = null;
+string? tagFilter = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -115,6 +124,33 @@ for (int i = 0; i < args.Length; i++)
         case "--bookmarks":
             bookmarksFilter = true;
             break;
+        case "--grep" when i + 1 < args.Length:
+            grepTerm = args[++i];
+            break;
+        case "--brief":
+            briefMode = true;
+            break;
+        case "--timeline":
+            timelineMode = true;
+            break;
+        case "--after" when i + 1 < args.Length:
+            afterFilter = args[++i];
+            break;
+        case "--tag" when i + 2 < args.Length:
+            tagSessionId = args[++i];
+            tagLabel = args[++i];
+            break;
+        case "--untag" when i + 2 < args.Length:
+            untagSessionId = args[++i];
+            untagLabel = args[++i];
+            break;
+        case "--tags":
+            // Optional label filter: --tags [label]
+            if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+                tagFilter = args[++i];
+            else
+                tagFilter = ""; // Empty string means "show tags column but don't filter"
+            break;
         default:
             // Positional argument: treat as session ID
             if (!args[i].StartsWith('-') && sessionId == null)
@@ -156,6 +192,11 @@ BookmarkStore? bookmarkStore = detectedProjectDir != null
     ? new BookmarkStore(baseProvider.GetProjectLogPath(detectedProjectDir))
     : null;
 
+// Create tag store when project is known
+TagStore? tagStore = detectedProjectDir != null
+    ? new TagStore(baseProvider.GetProjectLogPath(detectedProjectDir))
+    : null;
+
 // Handle --bookmark toggle (needs provider + project dir only, no session loading)
 if (bookmarkSessionId != null)
 {
@@ -167,6 +208,33 @@ if (bookmarkSessionId != null)
 
     var added = bookmarkStore.Toggle(bookmarkSessionId);
     Console.WriteLine(added ? $"★ Bookmarked {bookmarkSessionId}" : $"  Unbookmarked {bookmarkSessionId}");
+    return 0;
+}
+
+// Handle --tag / --untag (needs project dir only, no session loading)
+if (tagSessionId != null && tagLabel != null)
+{
+    if (tagStore == null)
+    {
+        Console.Error.WriteLine("Cannot tag: no project directory detected. Use -C <dir> to specify one.");
+        return 1;
+    }
+
+    var added = tagStore.AddTag(tagSessionId, tagLabel);
+    Console.WriteLine(added ? $"Tagged {tagSessionId} with '{tagLabel}'" : $"Already tagged {tagSessionId} with '{tagLabel}'");
+    return 0;
+}
+
+if (untagSessionId != null && untagLabel != null)
+{
+    if (tagStore == null)
+    {
+        Console.Error.WriteLine("Cannot untag: no project directory detected. Use -C <dir> to specify one.");
+        return 1;
+    }
+
+    var removed = tagStore.RemoveTag(untagSessionId, untagLabel);
+    Console.WriteLine(removed ? $"Removed tag '{untagLabel}' from {untagSessionId}" : $"Tag '{untagLabel}' not found on {untagSessionId}");
     return 0;
 }
 
@@ -208,7 +276,8 @@ if (followMode)
 var sessionManager = new SessionManager();
 
 // Load sessions
-var quietMode = plainMode || tsvMode || dumpSessionId != null || infoSessionId != null || summarySessionId != null || tocSessionId != null;
+var quietMode = plainMode || tsvMode || briefMode || timelineMode
+    || dumpSessionId != null || infoSessionId != null || summarySessionId != null || tocSessionId != null;
 if (!quietMode)
     terminal.Append("Loading sessions...");
 await sessionManager.LoadFromProviderAsync(provider);
@@ -223,9 +292,21 @@ if (!quietMode)
 }
 
 // Plain-text commands — no ANSI, suitable for LLM consumption / piping
+if (briefMode)
+{
+    DumpCommand.PrintBrief(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null, tagFilter != null ? tagStore : null);
+    return 0;
+}
+
+if (timelineMode)
+{
+    TimelineCommand.Execute(sessionManager, projectFilter, afterFilter);
+    return 0;
+}
+
 if (infoSessionId != null)
 {
-    DumpCommand.PrintInfo(sessionManager, infoSessionId, turnSlice);
+    DumpCommand.PrintInfo(sessionManager, infoSessionId, turnSlice, bookmarkStore, tagStore);
     return 0;
 }
 
@@ -249,6 +330,10 @@ if (dumpSessionId != null)
 // Route to appropriate command
 if (args.Contains("--list") || args.Contains("-l"))
 {
+    // Determine effective tag filter: --tags without a label means show column, --tags <label> means filter
+    var effectiveTagFilter = tagFilter == "" ? null : tagFilter;
+    var showTagStore = tagFilter != null ? tagStore : null;
+
     if (tsvMode)
     {
         if (detectedProjectDir == null && !showAll && targetDir == null && projectFilter == null && customPath == null)
@@ -258,7 +343,7 @@ if (args.Contains("--list") || args.Contains("-l"))
             Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
         }
 
-        DumpCommand.ListSessionsTsv(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null);
+        DumpCommand.ListSessionsTsv(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null, grepTerm, showTagStore, effectiveTagFilter);
         return 0;
     }
 
@@ -271,7 +356,7 @@ if (args.Contains("--list") || args.Contains("-l"))
             Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
         }
 
-        DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null);
+        DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null, grepTerm, showTagStore, effectiveTagFilter);
         return 0;
     }
 
@@ -416,8 +501,16 @@ void ShowHelp()
     Console.WriteLine("  agent-trace --dump <id> --speaker assistant  Only assistant text");
     Console.WriteLine("  agent-trace --dump <id> --compact   Collapse large tool results");
     Console.WriteLine("  agent-trace --summary <id>          Summarize via claude CLI");
+    Console.WriteLine("  agent-trace --brief                 Digest of 5 most recent sessions");
+    Console.WriteLine("  agent-trace --timeline              Cross-session chronological view");
+    Console.WriteLine("  agent-trace --timeline --after \"2h ago\"  Timeline filtered by time");
     Console.WriteLine("  agent-trace --bookmark <id>  Toggle bookmark on a session");
     Console.WriteLine("  agent-trace --list --plain --bookmarks  List only bookmarked sessions");
+    Console.WriteLine("  agent-trace --list --plain --grep \"term\"  Filter list by content match");
+    Console.WriteLine("  agent-trace --tag <id> <label>   Add a tag to a session");
+    Console.WriteLine("  agent-trace --untag <id> <label> Remove a tag from a session");
+    Console.WriteLine("  agent-trace --list --plain --tags        List with tags column");
+    Console.WriteLine("  agent-trace --list --plain --tags <label>  Filter by tag label");
     Console.WriteLine("  agent-trace --follow     Follow the active session (live tail)");
     Console.WriteLine("  agent-trace --watch \"pattern\"  Follow + exit on match (tripwire)");
     Console.WriteLine("  agent-trace --search \"term\"  Search across sessions");
@@ -438,8 +531,15 @@ void ShowHelp()
     Console.WriteLine("  --turns <N|M..N>         Last N turns, or range M..N (1-indexed, inclusive)");
     Console.WriteLine("  --speaker <user|assistant>  Filter entries by role (use with --dump)");
     Console.WriteLine("  --compact                Collapse large tool results to one line");
+    Console.WriteLine("  --brief                  Compact digest of 5 most recent sessions");
+    Console.WriteLine("  --timeline               Cross-session chronological timeline");
+    Console.WriteLine("  --after <time>           Filter timeline (\"2h ago\", \"1d ago\", date)");
+    Console.WriteLine("  --grep <term>            Filter --list to sessions containing term");
     Console.WriteLine("  --bookmark <session-id>  Toggle bookmark on a session");
     Console.WriteLine("  --bookmarks              Show only bookmarked sessions (use with --list)");
+    Console.WriteLine("  --tag <id> <label>       Add a tag to a session");
+    Console.WriteLine("  --untag <id> <label>     Remove a tag from a session");
+    Console.WriteLine("  --tags [label]           Show tags column; optionally filter by label");
     Console.WriteLine("  --summary <session-id>   Summarize conversation via claude --print");
     Console.WriteLine("  --skill                  Print LLM skill guide (SKILL.md)");
     Console.WriteLine("  -f, --follow             Follow the active session for this project");
