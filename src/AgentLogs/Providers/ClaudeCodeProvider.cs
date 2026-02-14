@@ -107,9 +107,11 @@ public partial class ClaudeCodeProvider : ILogProvider
         }
     }
 
-    public IAsyncEnumerable<Entry> GetEntriesFromFileAsync(string filePath)
+    public async IAsyncEnumerable<Entry> GetEntriesFromFileAsync(string filePath)
     {
-        return EntryParser.ParseFileAsync(filePath);
+        var result = await EntryParser.ParseFileFullAsync(filePath);
+        foreach (var entry in result.Entries)
+            yield return entry;
     }
 
     public string? ExtractProjectName(string filePath)

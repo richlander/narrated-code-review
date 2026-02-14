@@ -4,4 +4,7 @@
     <Project Path="src/AgentTrace/AgentTrace.csproj" />
     <Project Path="src/NarratedCodeReviewer/NarratedCodeReviewer.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AgentTrace.Tests/AgentTrace.Tests.csproj" />
+  </Folder>
 </Solution>

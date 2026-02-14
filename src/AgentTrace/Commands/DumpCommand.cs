@@ -1,75 +1,9 @@
-using System.Diagnostics;
-using System.Text.RegularExpressions;
 using AgentLogs.Domain;
 using AgentLogs.Services;
 using AgentTrace.Services;
 using Markout;
 
 namespace AgentTrace.Commands;
-
-/// <summary>
-/// Selects a slice of turns: a single turn by index, a 1-indexed range M..N, or the last N.
-/// </summary>
-public readonly record struct TurnSlice(int? Last, int? From, int? To)
-{
-    /// <summary>
-    /// Parses --turns value: bare "5" → turn 5 (1-indexed), "3..7" → range 3-7.
-    /// </summary>
-    public static TurnSlice Parse(string value)
-    {
-        var dotIdx = value.IndexOf("..", StringComparison.Ordinal);
-        if (dotIdx >= 0)
-        {
-            var fromStr = value[..dotIdx];
-            var toStr = value[(dotIdx + 2)..];
-            if (int.TryParse(fromStr, out var from) && int.TryParse(toStr, out var to))
-                return new TurnSlice(null, from, to);
-        }
-
-        // Bare number = single turn by 1-indexed position
-        if (int.TryParse(value, out var index) && index > 0)
-            return new TurnSlice(null, index, index);
-
-        return default;
-    }
-
-    /// <summary>
-    /// Creates a TurnSlice for the last N turns (used by --last flag).
-    /// </summary>
-    public static TurnSlice LastN(int count) => new(count, null, null);
-
-    public IReadOnlyList<Turn> Apply(IReadOnlyList<Turn> turns)
-    {
-        if (From.HasValue && To.HasValue)
-        {
-            // 1-indexed inclusive range → 0-indexed
-            var from = Math.Max(0, From.Value - 1);
-            var to = Math.Min(turns.Count, To.Value);
-            if (from >= to) return [];
-            return turns.Skip(from).Take(to - from).ToList();
-        }
-
-        if (Last.HasValue && Last.Value > 0 && Last.Value < turns.Count)
-            return turns.Skip(turns.Count - Last.Value).ToList();
-
-        return turns;
-    }
-
-    public string Describe()
-    {
-        if (From.HasValue && To.HasValue)
-        {
-            if (From.Value == To.Value)
-                return $"turn {From.Value}";
-            return $"turns {From.Value}..{To.Value}";
-        }
-        if (Last.HasValue)
-            return $"last {Last.Value} turns";
-        return "all turns";
-    }
-
-    public bool IsSet => Last.HasValue || (From.HasValue && To.HasValue);
-}
 
 /// <summary>
 /// Dumps session data as plain text to stdout — no ANSI, no ITerminal.
@@ -84,7 +18,7 @@ public static class DumpCommand
         string? projectDir = null, BookmarkStore? bookmarkStore = null, string? grepTerm = null,
         TagStore? tagStore = null, string? tagFilter = null)
     {
-        var sessions = FilterSessions(sessionManager, projectFilter);
+        var sessions = SessionHelper.FilterSessions(sessionManager, projectFilter);
         var bookmarks = bookmarkStore?.Load();
         var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
 
@@ -135,7 +69,7 @@ public static class DumpCommand
             var status = session.IsActive ? "active" : "done";
             var project = session.ProjectName ?? "Unknown";
             var messages = $"{session.UserMessageCount}u/{session.AssistantMessageCount}a";
-            var duration = FormatDuration(session.Duration);
+            var duration = Formatting.FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
             var row = new List<string>();
@@ -157,7 +91,7 @@ public static class DumpCommand
         BookmarkStore? bookmarkStore = null, string? grepTerm = null,
         TagStore? tagStore = null, string? tagFilter = null)
     {
-        var sessions = FilterSessions(sessionManager, projectFilter);
+        var sessions = SessionHelper.FilterSessions(sessionManager, projectFilter);
         var bookmarks = bookmarkStore?.Load();
         var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
 
@@ -193,7 +127,7 @@ public static class DumpCommand
             var status = session.IsActive ? "active" : "done";
             var project = session.ProjectName ?? "Unknown";
             var messages = $"{session.UserMessageCount}u/{session.AssistantMessageCount}a";
-            var duration = FormatDuration(session.Duration);
+            var duration = Formatting.FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
             var row = "";
@@ -211,7 +145,7 @@ public static class DumpCommand
     public static void PrintInfo(SessionManager sessionManager, string sessionId,
         TurnSlice turnSlice = default, BookmarkStore? bookmarkStore = null, TagStore? tagStore = null)
     {
-        var (session, conversation) = ResolveSession(sessionManager, sessionId);
+        var (session, conversation) = SessionHelper.ResolveSession(sessionManager, sessionId);
         if (session == null || conversation == null)
             return;
 
@@ -226,7 +160,7 @@ public static class DumpCommand
         writer.WriteField("Project", session.ProjectName ?? "Unknown");
         writer.WriteField("Status", session.IsActive ? "active" : "done");
         writer.WriteField("Started", session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
-        writer.WriteField("Duration", FormatDuration(session.Duration));
+        writer.WriteField("Duration", Formatting.FormatDuration(session.Duration));
         writer.WriteField("Turns", conversation.Turns.Count);
         writer.WriteField("Messages", $"{session.UserMessageCount}u/{session.AssistantMessageCount}a");
         writer.WriteField("Tool calls", session.ToolCallCount);
@@ -255,7 +189,7 @@ public static class DumpCommand
         if (gitBranch != null)
             writer.WriteField("Branch", gitBranch);
 
-        // Git commits during session (Feature 7)
+        // Git commits during session
         PrintGitCommits(writer, session);
 
         writer.Flush();
@@ -274,23 +208,8 @@ public static class DumpCommand
             var after = session.StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
             var before = session.LastActivityTime.ToUniversalTime().AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ssZ");
 
-            var psi = new ProcessStartInfo("git")
-            {
-                Arguments = $"log --oneline --after=\"{after}\" --before=\"{before}\"",
-                WorkingDirectory = session.ProjectPath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null) return;
-
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(5000);
-
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            var output = GitRunner.RunGit(session.ProjectPath, $"log --oneline --after=\"{after}\" --before=\"{before}\"");
+            if (string.IsNullOrWhiteSpace(output))
                 return;
 
             writer.WriteHeading(2, "Commits during session");
@@ -313,7 +232,7 @@ public static class DumpCommand
         int? headLines = null, int? tailLines = null, TurnSlice turnSlice = default,
         string? speakerFilter = null, bool compact = false)
     {
-        var (session, conversation) = ResolveSession(sessionManager, sessionId);
+        var (session, conversation) = SessionHelper.ResolveSession(sessionManager, sessionId);
         if (session == null || conversation == null)
             return;
 
@@ -390,41 +309,11 @@ public static class DumpCommand
     }
 
     /// <summary>
-    /// Resolves a session ID (with prefix matching) to session + conversation.
-    /// </summary>
-    public static (Session? Session, Conversation? Conversation) ResolveSession(SessionManager sessionManager, string sessionId)
-    {
-        var entries = sessionManager.GetSessionEntries(sessionId);
-
-        if (entries.Count == 0)
-        {
-            var match = sessionManager.GetAllSessions()
-                .FirstOrDefault(s => s.Id.StartsWith(sessionId, StringComparison.OrdinalIgnoreCase));
-
-            if (match != null)
-            {
-                entries = sessionManager.GetSessionEntries(match.Id);
-                sessionId = match.Id;
-            }
-        }
-
-        if (entries.Count == 0)
-        {
-            Console.Error.WriteLine($"Session not found: {sessionId}");
-            return (null, null);
-        }
-
-        var session = sessionManager.GetSession(sessionId);
-        var conversation = new Conversation(sessionId, entries);
-        return (session, conversation);
-    }
-
-    /// <summary>
     /// Prints a table of contents — one line per turn.
     /// </summary>
     public static void PrintToc(SessionManager sessionManager, string sessionId)
     {
-        var (session, conversation) = ResolveSession(sessionManager, sessionId);
+        var (session, conversation) = SessionHelper.ResolveSession(sessionManager, sessionId);
         if (session == null || conversation == null)
             return;
 
@@ -441,7 +330,7 @@ public static class DumpCommand
             var assistantCount = turn.Entries.OfType<AssistantEntry>().Count();
             var messages = $"{userCount}u/{assistantCount}a";
             var tools = turn.ToolUses.Count.ToString();
-            var duration = FormatDuration(turn.Duration);
+            var duration = Formatting.FormatDuration(turn.Duration);
 
             // Content preview: first user message, or first assistant text
             var preview = turn.UserMessage;
@@ -474,7 +363,7 @@ public static class DumpCommand
                     .Select(a => a.TextContent)
                     .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
             }
-            preview = contPrefix + Truncate(preview ?? "", 60 - contPrefix.Length);
+            preview = contPrefix + Formatting.Truncate(preview ?? "", 60 - contPrefix.Length);
 
             writer.WriteTableRow(turnNum, messages, tools, duration, preview);
         }
@@ -489,7 +378,7 @@ public static class DumpCommand
     public static void PrintBrief(SessionManager sessionManager, string? projectFilter = null,
         BookmarkStore? bookmarkStore = null, TagStore? tagStore = null, int count = 5)
     {
-        var sessions = FilterSessions(sessionManager, projectFilter);
+        var sessions = SessionHelper.FilterSessions(sessionManager, projectFilter);
         var bookmarks = bookmarkStore?.Load();
         var allTags = tagStore?.LoadAllResolved(sessions.Select(s => s.Id));
 
@@ -503,7 +392,7 @@ public static class DumpCommand
         {
             var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
             var status = session.IsActive ? "active" : "done";
-            var age = FormatAge(DateTime.UtcNow - session.StartTime);
+            var age = Formatting.FormatAge(DateTime.UtcNow - session.StartTime);
             var bookmark = bookmarks?.Contains(session.Id) == true ? " ★" : "";
             var tags = allTags != null && allTags.TryGetValue(session.Id, out var t) ? $" [{string.Join(", ", t)}]" : "";
 
@@ -511,26 +400,17 @@ public static class DumpCommand
             writer.WriteCompactFields(
                 new MarkoutField("Age", age),
                 new MarkoutField("Status", status),
-                new MarkoutField("Turns", GetTurnCount(sessionManager, session.Id).ToString()),
+                new MarkoutField("Turns", SessionHelper.GetTurnCount(sessionManager, session.Id).ToString()),
                 new MarkoutField("Messages", $"{session.UserMessageCount}u/{session.AssistantMessageCount}a"),
                 new MarkoutField("Tools", session.ToolCallCount.ToString()));
 
             // Goal: first real user message (skip continuation preambles)
             var entries = sessionManager.GetSessionEntries(session.Id);
             var conversation = new Conversation(session.Id, entries);
+            var goal = SessionHelper.GetGoal(conversation, 100);
 
-            var goalMessage = conversation.Turns
-                .Select(t2 => t2.UserMessage)
-                .Where(m => !string.IsNullOrWhiteSpace(m))
-                .Select(m =>
-                {
-                    var cont = ContinuationDetector.Parse(m);
-                    return cont.IsContinuation ? cont.SubstantiveContent : m;
-                })
-                .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
-
-            if (goalMessage != null)
-                writer.WriteField("Goal", Truncate(goalMessage, 100));
+            if (goal != "(no user message)")
+                writer.WriteField("Goal", goal);
 
             // Last: last assistant message
             var lastAssistant = conversation.Turns
@@ -539,36 +419,10 @@ public static class DumpCommand
                 .LastOrDefault(t2 => !string.IsNullOrWhiteSpace(t2));
 
             if (lastAssistant != null)
-                writer.WriteField("Last", Truncate(lastAssistant, 100));
+                writer.WriteField("Last", Formatting.Truncate(lastAssistant, 100));
         }
 
         writer.Flush();
-    }
-
-    private static int GetTurnCount(SessionManager sessionManager, string sessionId)
-    {
-        var entries = sessionManager.GetSessionEntries(sessionId);
-        if (entries.Count == 0) return 0;
-        var conversation = new Conversation(sessionId, entries);
-        return conversation.Turns.Count;
-    }
-
-    private static string FormatAge(TimeSpan age)
-    {
-        if (age.TotalMinutes < 60)
-            return $"{(int)age.TotalMinutes}m ago";
-        if (age.TotalHours < 24)
-            return $"{(int)age.TotalHours}h ago";
-        return $"{(int)age.TotalDays}d ago";
-    }
-
-    private static string Truncate(string text, int maxLength)
-    {
-        // Collapse to single line
-        var singleLine = text.ReplaceLineEndings(" ");
-        if (singleLine.Length <= maxLength)
-            return singleLine;
-        return string.Concat(singleLine.AsSpan(0, maxLength), "...");
     }
 
     private static void PrintTurn(Turn turn, TextWriter output, string? speakerFilter = null, bool compact = false)
@@ -724,35 +578,11 @@ public static class DumpCommand
         }
     }
 
-    internal static IReadOnlyList<Session> FilterSessions(SessionManager sessionManager, string? projectFilter)
-    {
-        var sessions = sessionManager.GetAllSessions();
-
-        if (projectFilter != null)
-        {
-            sessions = sessions
-                .Where(s => s.ProjectName != null &&
-                    s.ProjectName.Contains(projectFilter, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-
-        return sessions;
-    }
-
     private static int CountDumpLines(Session session, Conversation conversation, TurnSlice turnSlice)
     {
         using var counter = new StringWriter();
         RenderConversation(session, conversation, counter, turnSlice);
         return counter.ToString().Split('\n').Length;
-    }
-
-    private static string FormatDuration(TimeSpan duration)
-    {
-        if (duration.TotalSeconds < 60)
-            return $"{(int)duration.TotalSeconds}s";
-        if (duration.TotalMinutes < 60)
-            return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
-        return $"{(int)duration.TotalHours}h {duration.Minutes}m";
     }
 
     /// <summary>

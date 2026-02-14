@@ -257,7 +257,7 @@ public class SessionPicker
         // Table
         _table.Bind(_filteredSessions, (session, index) =>
         {
-            var duration = FormatDuration(session.Duration);
+            var duration = Formatting.FormatDuration(session.Duration);
             var date = session.StartTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
             var bookmarked = _bookmarks.Contains(session.Id);
 
@@ -299,14 +299,5 @@ public class SessionPicker
             _footerText
                 .Append("q", TerminalColor.Gray).Append(" Quit");
         }
-    }
-
-    private static string FormatDuration(TimeSpan duration)
-    {
-        if (duration.TotalSeconds < 60)
-            return $"{(int)duration.TotalSeconds}s";
-        if (duration.TotalMinutes < 60)
-            return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
-        return $"{(int)duration.TotalHours}h {duration.Minutes}m";
     }
 }

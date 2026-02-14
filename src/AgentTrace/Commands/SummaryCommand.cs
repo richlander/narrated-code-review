@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentLogs.Services;
+using AgentTrace.Services;
 
 namespace AgentTrace.Commands;
 
@@ -17,7 +18,7 @@ public static class SummaryCommand
 
     public static async Task<int> RunAsync(SessionManager sessionManager, string sessionId, TurnSlice turnSlice = default)
     {
-        var (session, conversation) = DumpCommand.ResolveSession(sessionManager, sessionId);
+        var (session, conversation) = SessionHelper.ResolveSession(sessionManager, sessionId);
         if (session == null || conversation == null)
             return 1;
 

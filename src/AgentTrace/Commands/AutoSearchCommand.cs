@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AgentLogs.Domain;
 using AgentLogs.Services;
 using AgentTrace.Services;
@@ -15,7 +14,7 @@ public static class AutoSearchCommand
     public static void Execute(SessionManager sessionManager, string? projectPath, string? projectFilter = null,
         BookmarkStore? bookmarkStore = null, TagStore? tagStore = null)
     {
-        var sessions = DumpCommand.FilterSessions(sessionManager, projectFilter);
+        var sessions = SessionHelper.FilterSessions(sessionManager, projectFilter);
         var writer = new MarkoutWriter(Console.Out);
         writer.WriteHeading(1, "Auto-Search Results");
 
@@ -36,10 +35,10 @@ public static class AutoSearchCommand
                 foreach (var s in bookmarkedSessions.Take(5))
                 {
                     var shortId = s.Id.Length > 7 ? s.Id[..7] : s.Id;
-                    var age = FormatAge(DateTime.UtcNow - s.StartTime);
+                    var age = Formatting.FormatAge(DateTime.UtcNow - s.StartTime);
                     var entries = sessionManager.GetSessionEntries(s.Id);
                     var conversation = new Conversation(s.Id, entries);
-                    var goal = GetGoal(conversation);
+                    var goal = SessionHelper.GetGoal(conversation);
                     writer.WriteListItem($"{shortId} ({age}) — {goal}");
                 }
             }
@@ -56,7 +55,7 @@ public static class AutoSearchCommand
                 {
                     var shortId = s.Id.Length > 7 ? s.Id[..7] : s.Id;
                     var tags = allTags.TryGetValue(s.Id, out var t) ? string.Join(", ", t) : "";
-                    var age = FormatAge(DateTime.UtcNow - s.StartTime);
+                    var age = Formatting.FormatAge(DateTime.UtcNow - s.StartTime);
                     writer.WriteListItem($"{shortId} ({age}) [{tags}]");
                 }
             }
@@ -115,6 +114,9 @@ public static class AutoSearchCommand
         // Search for stamps
         SearchStamps(sessions, sessionManager, writer);
 
+        // Search for decisions
+        SearchDecisions(sessions, sessionManager, writer);
+
         // Search for structured breadcrumbs
         var breadcrumbPatterns = new[]
         {
@@ -147,9 +149,7 @@ public static class AutoSearchCommand
                 writer.WriteHeading(2, $"{label} ({hits.Count})");
                 foreach (var (sid, ctx) in hits.Take(10))
                 {
-                    var clean = ctx.Replace('\n', ' ').Replace('\r', ' ');
-                    if (clean.Length > 80) clean = clean[..80] + "...";
-                    writer.WriteListItem($"{sid}: {clean}");
+                    writer.WriteListItem($"{sid}: {Formatting.Truncate(ctx, 80)}");
                 }
             }
         }
@@ -166,12 +166,12 @@ public static class AutoSearchCommand
         try
         {
             // Current branch
-            var branch = RunGit(projectPath, "rev-parse --abbrev-ref HEAD");
+            var branch = GitRunner.RunGit(projectPath, "rev-parse --abbrev-ref HEAD");
             if (branch != null)
                 clues["branch"] = branch.Trim();
 
             // Recent commits (last 5)
-            var log = RunGit(projectPath, "log --oneline -5");
+            var log = GitRunner.RunGit(projectPath, "log --oneline -5");
             if (log != null)
             {
                 clues["commits"] = log.Trim();
@@ -190,42 +190,47 @@ public static class AutoSearchCommand
         return clues;
     }
 
-    private static string? RunGit(string workingDirectory, string arguments)
+    private static void SearchDecisions(IReadOnlyList<Session> sessions, SessionManager sessionManager, MarkoutWriter writer)
     {
-        var psi = new ProcessStartInfo("git")
+        var matcher = new EntryMatcher("«decision:");
+        var decisions = new List<(string SessionId, string Timestamp, string Chose, string? Over, string? Because)>();
+
+        foreach (var session in sessions)
         {
-            Arguments = arguments,
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(psi);
-        if (process == null) return null;
-
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(5000);
-
-        return process.ExitCode == 0 ? output : null;
-    }
-
-    private static string GetGoal(Conversation conversation)
-    {
-        var goalMessage = conversation.Turns
-            .Select(t => t.UserMessage)
-            .Where(m => !string.IsNullOrWhiteSpace(m))
-            .Select(m =>
+            var entries = sessionManager.GetSessionEntries(session.Id);
+            foreach (var entry in entries)
             {
-                var cont = ContinuationDetector.Parse(m);
-                return cont.IsContinuation ? cont.SubstantiveContent : m;
-            })
-            .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
+                var ctx = matcher.FindMatch(entry);
+                if (ctx == null) continue;
 
-        if (goalMessage == null) return "(no user message)";
-        var single = goalMessage.ReplaceLineEndings(" ");
-        return single.Length > 80 ? single[..80] + "..." : single;
+                var fullText = StampParser.ExtractDecisionText(entry, matcher);
+                if (fullText == null) continue;
+
+                var timestamp = StampParser.ParseDecisionTimestamp(fullText);
+                if (timestamp == null || timestamp.Length < 10) continue;
+
+                var chose = StampParser.ParseStampField(fullText, "chose");
+                if (chose == null) continue;
+
+                var over = StampParser.ParseStampField(fullText, "over");
+                var because = StampParser.ParseStampField(fullText, "because");
+
+                var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
+                decisions.Add((shortId, timestamp, chose, over, because));
+            }
+        }
+
+        if (decisions.Count > 0)
+        {
+            writer.WriteHeading(2, $"Decisions ({decisions.Count})");
+            foreach (var (sid, ts, chose, over, because) in decisions.Take(10))
+            {
+                var parts = new List<string> { ts, $"chose: {chose}" };
+                if (over != null) parts.Add($"over: {over}");
+                if (because != null) parts.Add($"because: {because}");
+                writer.WriteListItem($"{sid}: {string.Join("  ", parts)}");
+            }
+        }
     }
 
     private static void SearchStamps(IReadOnlyList<Session> sessions, SessionManager sessionManager, MarkoutWriter writer)
@@ -242,15 +247,15 @@ public static class AutoSearchCommand
                 if (ctx == null) continue;
 
                 // Found a stamp — now extract the full content to parse fields
-                var fullText = ExtractStampText(entry, matcher);
+                var fullText = StampParser.ExtractStampText(entry, matcher);
                 if (fullText == null) continue;
 
-                var timestamp = ParseStampTimestamp(fullText);
+                var timestamp = StampParser.ParseStampTimestamp(fullText);
                 if (timestamp == null || timestamp.Length < 10) continue; // Not a real stamp block
 
-                var stampSession = ParseStampField(fullText, "session");
-                var commit = ParseStampField(fullText, "commit");
-                var message = ParseStampField(fullText, "message");
+                var stampSession = StampParser.ParseStampField(fullText, "session");
+                var commit = StampParser.ParseStampField(fullText, "commit");
+                var message = StampParser.ParseStampField(fullText, "message");
 
                 var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
                 stamps.Add((shortId, timestamp, stampSession, commit, message));
@@ -269,50 +274,5 @@ public static class AutoSearchCommand
                 writer.WriteListItem($"{sid}: {string.Join("  ", parts)}");
             }
         }
-    }
-
-    private static string? ExtractStampText(Entry entry, EntryMatcher matcher)
-    {
-        // Check user entry content blocks (tool results) — stamps land here via Bash output
-        if (entry is UserEntry user)
-        {
-            foreach (var block in user.ContentBlocks)
-            {
-                if (block is ToolResultBlock toolResult && toolResult.Content != null
-                    && matcher.IsMatch(toolResult.Content) && toolResult.Content.Contains("«/stamp»"))
-                    return toolResult.Content;
-            }
-            if (user.Content != null && matcher.IsMatch(user.Content) && user.Content.Contains("«/stamp»"))
-                return user.Content;
-        }
-
-        if (entry is AssistantEntry assistant && assistant.TextContent != null
-            && matcher.IsMatch(assistant.TextContent) && assistant.TextContent.Contains("«/stamp»"))
-            return assistant.TextContent;
-
-        return null;
-    }
-
-    private static string? ParseStampTimestamp(string text)
-    {
-        // Match «stamp:2026-02-13T08:15:00Z»
-        var match = System.Text.RegularExpressions.Regex.Match(text, @"«stamp:([^»]+)»");
-        return match.Success ? match.Groups[1].Value : null;
-    }
-
-    private static string? ParseStampField(string text, string field)
-    {
-        // Match "  field: value" lines
-        var match = System.Text.RegularExpressions.Regex.Match(text, $@"^\s*{field}:\s*(.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
-        return match.Success ? match.Groups[1].Value.Trim() : null;
-    }
-
-    private static string FormatAge(TimeSpan age)
-    {
-        if (age.TotalMinutes < 60)
-            return $"{(int)age.TotalMinutes}m ago";
-        if (age.TotalHours < 24)
-            return $"{(int)age.TotalHours}h ago";
-        return $"{(int)age.TotalDays}d ago";
     }
 }

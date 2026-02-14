@@ -38,6 +38,10 @@ agent-trace --list --plain --grep "migration"
 
 # 6. Cross-session timeline of recent activity
 agent-trace --timeline --after "2h ago"
+
+# 7. Dense structured packet (alternative to orient for agents)
+agent-trace packet
+agent-trace packet --depth 10
 ```
 
 ## Structured Stamps (Primary Breadcrumb)
@@ -93,6 +97,50 @@ Stamps are searchable via `--autosearch` (shows a dedicated Stamps section), and
 ```bash
 agent-trace --autosearch                      # Stamps section with parsed fields
 agent-trace --list --plain --grep "«stamp:"   # Find sessions containing stamps
+```
+
+## Decision Stamps
+
+Use `agent-trace decision` to record architectural and design decisions in a structured
+`«decision:...»` block. Lighter than stamps — captures the choice, alternatives, and rationale
+without working tree state.
+
+```bash
+# Record a decision with alternatives and rationale
+agent-trace decision "Use System.CommandLine" --over "hand-rolled, Spectre.Console" --because "better help, subcommands"
+
+# Record a simple choice (--over and --because are optional)
+agent-trace decision "Store decisions as guillemet blocks"
+```
+
+Output format:
+```
+«decision:2026-02-13T14:30:00Z»
+  chose: Use System.CommandLine
+  over: hand-rolled, Spectre.Console
+  because: better help, subcommands
+  session: 3cb8313
+  branch: main
+  commit: e4a249d Add --orient command...
+«/decision»
+```
+
+### When to record decisions
+
+- **Architectural choices** — framework, library, or pattern selection
+- **Design tradeoffs** — when you pick one approach over another
+- **Convention adoption** — naming, file layout, API style decisions
+- **Technology changes** — switching from one tool/library to another
+
+### Finding decisions
+
+Decisions appear in `orient` (Breadcrumbs section), `autosearch` (dedicated Decisions section),
+and `packet` (decisions section):
+
+```bash
+agent-trace orient                                # decisions in Breadcrumbs
+agent-trace autosearch                            # dedicated Decisions section
+agent-trace search "«decision:"                   # find sessions with decisions
 ```
 
 ## Writing Breadcrumbs (Producer)
@@ -343,11 +391,31 @@ agent-trace --summary <id> --turns 5
 ### Stamp
 
 ```bash
-agent-trace --stamp "Completed auth middleware"  # with message
-agent-trace --stamp                              # auto-only (session + git)
+agent-trace stamp "Completed auth middleware"    # with message
+agent-trace stamp                                # auto-only (session + git)
 ```
 
 Emits a `«stamp:...»` block with session ID, git state, and optional message.
+
+### Decision
+
+```bash
+agent-trace decision "Use X" --over "Y, Z" --because "reason"
+agent-trace decision "Simple choice"
+```
+
+Emits a `«decision:...»` block with chose/over/because fields and session/branch/commit context.
+
+### Packet
+
+```bash
+agent-trace packet                               # default: 5 recent sessions
+agent-trace packet --depth 10                    # include more sessions
+```
+
+Dense structured context packet for agent consumption. No markdown — pure `key: value` pairs
+in `--- section ---` delimited blocks. Sections: project, git, sessions, decisions, stamps, files.
+Alternative to `orient` when you want pure data instead of markdown prose.
 
 ### Bookmarks and Tags
 

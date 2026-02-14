@@ -82,7 +82,7 @@ public static class SearchCommand
                 terminal.SetColor(role == "user" ? TerminalColor.Cyan : TerminalColor.Green);
                 terminal.Append($"{role}: ");
                 terminal.ResetColor();
-                terminal.AppendLine(Truncate(context, 70));
+                terminal.AppendLine(Formatting.Truncate(context, 70));
             }
 
             if (sessionMatches.Count > 10)
@@ -98,12 +98,5 @@ public static class SearchCommand
         terminal.AppendLine($"  {totalMatches} match(es) across {sessions.Count} session(s)");
         terminal.ResetColor();
         terminal.AppendLine();
-    }
-
-    private static string Truncate(string text, int maxLength)
-    {
-        if (string.IsNullOrEmpty(text)) return "";
-        var firstLine = text.Replace('\n', ' ').Replace('\r', ' ');
-        return firstLine.Length <= maxLength ? firstLine : firstLine[..(maxLength - 3)] + "...";
     }
 }

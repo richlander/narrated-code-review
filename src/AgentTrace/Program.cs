@@ -1,638 +1,535 @@
+using System.CommandLine;
 using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
-using AgentLogs.Parsing;
 using AgentLogs.Providers;
 using AgentLogs.Services;
 using AgentTrace.Commands;
 using AgentTrace.Services;
 using AgentTrace.UI;
 
-if (args.Contains("--help") || args.Contains("-h"))
+// Global options (recursive — available on all subcommands)
+var pathOption = new Option<string?>("--path") { Description = "Custom Claude logs directory" };
+pathOption.Aliases.Add("-p");
+pathOption.Recursive = true;
+
+var projectOption = new Option<string?>("--project") { Description = "Filter by project name" };
+projectOption.Recursive = true;
+
+var allOption = new Option<bool>("--all") { Description = "Show all sessions" };
+allOption.Aliases.Add("-a");
+allOption.Recursive = true;
+
+var dirOption = new Option<string?>("--dir") { Description = "Show sessions for a specific directory" };
+dirOption.Aliases.Add("-C");
+dirOption.Recursive = true;
+
+// Root command
+var rootCommand = new RootCommand("AgentTrace - AI Conversation Reader");
+rootCommand.Options.Add(pathOption);
+rootCommand.Options.Add(projectOption);
+rootCommand.Options.Add(allOption);
+rootCommand.Options.Add(dirOption);
+
+var sessionArg = new Argument<string?>("session-id") { Arity = ArgumentArity.ZeroOrOne };
+rootCommand.Arguments.Add(sessionArg);
+
+rootCommand.SetAction(async (parseResult, ct) =>
 {
-    ShowHelp();
-    return 0;
-}
+    var sessionId = parseResult.GetValue(sessionArg);
+    var ctx = CreateContext(parseResult);
+    if (ctx == null) return 1;
 
-if (args.Contains("--version") || args.Contains("-v"))
-{
-    var version = "AgentTrace v0.2.0";
-    var infoVersion = System.Reflection.CustomAttributeExtensions
-        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(Program).Assembly)?.InformationalVersion;
-    // InformationalVersion format: "1.0.0+commithash"
-    if (infoVersion != null)
-    {
-        var plusIdx = infoVersion.IndexOf('+');
-        if (plusIdx >= 0)
-            version += $" ({infoVersion[(plusIdx + 1)..].AsSpan(0, Math.Min(7, infoVersion.Length - plusIdx - 1))})";
-    }
-    Console.WriteLine(version);
-    return 0;
-}
+    var console = new SystemConsole();
+    var terminal = new AnsiTerminal(console);
 
-if (args.Contains("--skill"))
-{
-    SkillCommand.Execute();
-    return 0;
-}
+    // Follow mode is no longer here — it's the 'follow' subcommand
 
-// Parse arguments
-string? customPath = null;
-string? projectFilter = null;
-string? searchTerm = null;
-string? sessionId = null;
-string? watchPattern = null;
-string? targetDir = null;
-var showAll = false;
-var followMode = false;
-var plainMode = false;
-var tsvMode = false;
-string? dumpSessionId = null;
-string? infoSessionId = null;
-string? summarySessionId = null;
-string? tocSessionId = null;
-int? headLines = null;
-int? tailLines = null;
-TurnSlice turnSlice = default;
-string? speakerFilter = null;
-var compactMode = false;
-string? bookmarkSessionId = null;
-var bookmarksFilter = false;
-string? grepTerm = null;
-var briefMode = false;
-var timelineMode = false;
-string? afterFilter = null;
-string? tagSessionId = null;
-string? tagLabel = null;
-string? untagSessionId = null;
-string? untagLabel = null;
-string? tagFilter = null;
-var autoSearchMode = false;
-var orientMode = false;
-var stampMode = false;
-string? stampMessage = null;
-int? lastTurns = null;
-
-for (int i = 0; i < args.Length; i++)
-{
-    switch (args[i])
-    {
-        case "--path" or "-p" when i + 1 < args.Length:
-            customPath = args[++i];
-            break;
-        case "--project" when i + 1 < args.Length:
-            projectFilter = args[++i];
-            break;
-        case "--search" or "-s" when i + 1 < args.Length:
-            searchTerm = args[++i];
-            break;
-        case "--list" or "-l":
-            break; // Handled below
-        case "--all" or "-a":
-            showAll = true;
-            break;
-        case "--follow" or "-f":
-            followMode = true;
-            break;
-        case "--watch" or "-w" when i + 1 < args.Length:
-            watchPattern = args[++i];
-            followMode = true; // Watch implies follow
-            break;
-        case "--dir" or "-C" when i + 1 < args.Length:
-            targetDir = Path.GetFullPath(args[++i]);
-            break;
-        case "--plain":
-            plainMode = true;
-            break;
-        case "--tsv":
-            tsvMode = true;
-            break;
-        case "--dump" when i + 1 < args.Length:
-            dumpSessionId = args[++i];
-            break;
-        case "--info" when i + 1 < args.Length:
-            infoSessionId = args[++i];
-            break;
-        case "--summary" when i + 1 < args.Length:
-            summarySessionId = args[++i];
-            break;
-        case "--toc" when i + 1 < args.Length:
-            tocSessionId = args[++i];
-            break;
-        case "--head" when i + 1 < args.Length:
-            if (int.TryParse(args[++i], out var h)) headLines = h;
-            break;
-        case "--tail" when i + 1 < args.Length:
-            if (int.TryParse(args[++i], out var t)) tailLines = t;
-            break;
-        case "--turns" when i + 1 < args.Length:
-            turnSlice = TurnSlice.Parse(args[++i]);
-            break;
-        case "--speaker" when i + 1 < args.Length:
-            speakerFilter = args[++i];
-            break;
-        case "--compact":
-            compactMode = true;
-            break;
-        case "--bookmark" when i + 1 < args.Length:
-            bookmarkSessionId = args[++i];
-            break;
-        case "--bookmarks":
-            bookmarksFilter = true;
-            break;
-        case "--grep" when i + 1 < args.Length:
-            grepTerm = args[++i];
-            break;
-        case "--brief":
-            briefMode = true;
-            break;
-        case "--timeline":
-            timelineMode = true;
-            break;
-        case "--after" when i + 1 < args.Length:
-            afterFilter = args[++i];
-            break;
-        case "--tag" when i + 2 < args.Length:
-            tagSessionId = args[++i];
-            tagLabel = args[++i];
-            break;
-        case "--untag" when i + 2 < args.Length:
-            untagSessionId = args[++i];
-            untagLabel = args[++i];
-            break;
-        case "--autosearch":
-            autoSearchMode = true;
-            break;
-        case "--orient":
-            orientMode = true;
-            break;
-        case "--last" when i + 1 < args.Length:
-            if (int.TryParse(args[++i], out var lastN)) lastTurns = lastN;
-            break;
-        case "--stamp":
-            stampMode = true;
-            // Optional message: consume next arg if it doesn't start with --
-            if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
-                stampMessage = args[++i];
-            break;
-        case "--tags":
-            // Optional label filter: --tags [label]
-            if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
-                tagFilter = args[++i];
-            else
-                tagFilter = ""; // Empty string means "show tags column but don't filter"
-            break;
-        default:
-            // Positional argument: treat as session ID
-            if (!args[i].StartsWith('-') && sessionId == null)
-            {
-                sessionId = args[i];
-            }
-            break;
-    }
-}
-
-// Apply --last flag to turn slice (takes precedence if --turns not set)
-if (lastTurns.HasValue && !turnSlice.IsSet)
-    turnSlice = TurnSlice.LastN(lastTurns.Value);
-
-// Create provider — auto-detect project from cwd unless --all or --project given
-var baseProvider = customPath != null
-    ? new ClaudeCodeProvider(customPath)
-    : new ClaudeCodeProvider();
-
-string? detectedProjectDir = null;
-if (targetDir != null)
-{
-    detectedProjectDir = baseProvider.FindProjectDir(targetDir);
-    if (detectedProjectDir == null)
-    {
-        Console.Error.WriteLine($"No Claude Code sessions found for: {targetDir}");
-        Console.Error.WriteLine($"  expected: {baseProvider.BasePath}/{ClaudeCodeProvider.EncodeProjectPath(targetDir)}");
-        return 1;
-    }
-}
-else if (!showAll && projectFilter == null && customPath == null)
-{
-    var cwd = Environment.CurrentDirectory;
-    detectedProjectDir = baseProvider.FindProjectDir(cwd);
-}
-
-var provider = detectedProjectDir != null
-    ? new ClaudeCodeProvider(baseProvider.BasePath) { ProjectDirFilter = detectedProjectDir }
-    : baseProvider;
-
-// Create bookmark store when project is known
-BookmarkStore? bookmarkStore = detectedProjectDir != null
-    ? new BookmarkStore(baseProvider.GetProjectLogPath(detectedProjectDir))
-    : null;
-
-// Create tag store when project is known
-TagStore? tagStore = detectedProjectDir != null
-    ? new TagStore(baseProvider.GetProjectLogPath(detectedProjectDir))
-    : null;
-
-// Handle --bookmark toggle (needs provider + project dir only, no session loading)
-if (bookmarkSessionId != null)
-{
-    if (bookmarkStore == null)
-    {
-        Console.Error.WriteLine("Cannot bookmark: no project directory detected. Use -C <dir> to specify one.");
-        return 1;
-    }
-
-    var added = bookmarkStore.Toggle(bookmarkSessionId);
-    Console.WriteLine(added ? $"★ Bookmarked {bookmarkSessionId}" : $"  Unbookmarked {bookmarkSessionId}");
-    return 0;
-}
-
-// Handle --tag / --untag (needs project dir only, no session loading)
-if (tagSessionId != null && tagLabel != null)
-{
-    if (tagStore == null)
-    {
-        Console.Error.WriteLine("Cannot tag: no project directory detected. Use -C <dir> to specify one.");
-        return 1;
-    }
-
-    var added = tagStore.AddTag(tagSessionId, tagLabel);
-    Console.WriteLine(added ? $"Tagged {tagSessionId} with '{tagLabel}'" : $"Already tagged {tagSessionId} with '{tagLabel}'");
-    return 0;
-}
-
-if (untagSessionId != null && untagLabel != null)
-{
-    if (tagStore == null)
-    {
-        Console.Error.WriteLine("Cannot untag: no project directory detected. Use -C <dir> to specify one.");
-        return 1;
-    }
-
-    var removed = tagStore.RemoveTag(untagSessionId, untagLabel);
-    Console.WriteLine(removed ? $"Removed tag '{untagLabel}' from {untagSessionId}" : $"Tag '{untagLabel}' not found on {untagSessionId}");
-    return 0;
-}
-
-// Handle --stamp (needs provider + project dir only, no session loading)
-if (stampMode)
-{
-    var projectLogPath = detectedProjectDir != null
-        ? baseProvider.GetProjectLogPath(detectedProjectDir)
-        : null;
-    var projectPath = targetDir ?? Environment.CurrentDirectory;
-    StampCommand.Execute(projectLogPath, projectPath, stampMessage);
-    return 0;
-}
-
-// Create terminal
-var console = new SystemConsole();
-var terminal = new AnsiTerminal(console);
-
-// Check if base path exists
-if (!Directory.Exists(provider.BasePath))
-{
-    terminal.SetColor(TerminalColor.Yellow);
-    terminal.Append("Warning: ");
-    terminal.ResetColor();
-    terminal.AppendLine($"Claude Code logs directory not found at {provider.BasePath}");
-    terminal.AppendLine();
-}
-
-// Follow mode — find and tail the active session
-if (followMode)
-{
-    if (detectedProjectDir == null)
-    {
-        var dir = targetDir ?? Environment.CurrentDirectory;
-        terminal.SetColor(TerminalColor.Red);
-        terminal.AppendLine("No Claude Code project found for current directory.");
-        terminal.ResetColor();
-        terminal.AppendLine($"  dir: {dir}");
-        terminal.AppendLine($"  expected: {provider.BasePath}/{ClaudeCodeProvider.EncodeProjectPath(dir)}");
-        terminal.AppendLine();
-        terminal.AppendLine("  Use -C <dir> to specify a different project directory.");
-        return 1;
-    }
-
-    var exitCode = await FollowCommand.RunAsync(baseProvider, detectedProjectDir, terminal, watchPattern);
-    return exitCode;
-}
-
-// Create services
-var sessionManager = new SessionManager();
-
-// Load sessions
-var quietMode = plainMode || tsvMode || briefMode || timelineMode || autoSearchMode || orientMode
-    || dumpSessionId != null || infoSessionId != null || summarySessionId != null || tocSessionId != null;
-if (!quietMode)
+    var sessionManager = new SessionManager();
     terminal.Append("Loading sessions...");
-await sessionManager.LoadFromProviderAsync(provider);
-var sessions = sessionManager.GetAllSessions();
-
-if (!quietMode)
-{
-    var scopeLabel = detectedProjectDir != null
+    await sessionManager.LoadFromProviderAsync(ctx.ScopedProvider);
+    var sessions = sessionManager.GetAllSessions();
+    var scopeLabel = ctx.DetectedProjectDir != null
         ? $" {sessions.Count} sessions for this project"
         : $" {sessions.Count} sessions loaded";
     terminal.AppendLine(scopeLabel);
-}
 
-// Plain-text commands — no ANSI, suitable for LLM consumption / piping
-if (orientMode)
-{
-    var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? targetDir ?? Environment.CurrentDirectory;
-    OrientCommand.Execute(sessionManager, projectPath, projectFilter, bookmarkStore, tagStore);
-    return 0;
-}
-
-if (autoSearchMode)
-{
-    // Resolve project path from first session's ProjectPath, or targetDir/cwd
-    var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? targetDir ?? Environment.CurrentDirectory;
-    AutoSearchCommand.Execute(sessionManager, projectPath, projectFilter, bookmarkStore, tagStore);
-    return 0;
-}
-
-if (briefMode)
-{
-    DumpCommand.PrintBrief(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null, tagFilter != null ? tagStore : null);
-    return 0;
-}
-
-if (timelineMode)
-{
-    TimelineCommand.Execute(sessionManager, projectFilter, afterFilter);
-    return 0;
-}
-
-if (infoSessionId != null)
-{
-    DumpCommand.PrintInfo(sessionManager, infoSessionId, turnSlice, bookmarkStore, tagStore);
-    return 0;
-}
-
-if (tocSessionId != null)
-{
-    DumpCommand.PrintToc(sessionManager, tocSessionId);
-    return 0;
-}
-
-if (summarySessionId != null)
-{
-    return await SummaryCommand.RunAsync(sessionManager, summarySessionId, turnSlice);
-}
-
-if (dumpSessionId != null)
-{
-    DumpCommand.PrintConversation(sessionManager, dumpSessionId, headLines, tailLines, turnSlice, speakerFilter, compactMode);
-    return 0;
-}
-
-// Route to appropriate command
-if (args.Contains("--list") || args.Contains("-l"))
-{
-    // Determine effective tag filter: --tags without a label means show column, --tags <label> means filter
-    var effectiveTagFilter = tagFilter == "" ? null : tagFilter;
-    var showTagStore = tagFilter != null ? tagStore : null;
-
-    if (tsvMode)
+    if (sessionId != null)
     {
-        if (detectedProjectDir == null && !showAll && targetDir == null && projectFilter == null && customPath == null)
-        {
-            var cwd = Environment.CurrentDirectory;
-            Console.Error.WriteLine($"Warning: No sessions found for current directory: {cwd}");
-            Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
-        }
-
-        DumpCommand.ListSessionsTsv(sessionManager, projectFilter, bookmarksFilter ? bookmarkStore : null, grepTerm, showTagStore, effectiveTagFilter);
+        await ViewSession(sessionManager, terminal, sessionId, ctx);
         return 0;
     }
 
-    if (plainMode)
+    // Non-interactive context (piped, no TTY) — list sessions instead of launching TUI
+    if (Console.IsInputRedirected)
     {
-        if (detectedProjectDir == null && !showAll && targetDir == null && projectFilter == null && customPath == null)
-        {
-            var cwd = Environment.CurrentDirectory;
-            Console.Error.WriteLine($"Warning: No sessions found for current directory: {cwd}");
-            Console.Error.WriteLine($"  Use -C <dir> to specify a project directory, or --all for all projects.");
-        }
-
-        DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null, grepTerm, showTagStore, effectiveTagFilter);
+        DumpCommand.ListSessionsMarkdown(sessionManager, parseResult.GetValue(projectOption), ctx.DetectedProjectDir, null);
         return 0;
     }
 
-    ListCommand.Execute(sessionManager, terminal, projectFilter);
-    return 0;
-}
-
-if (searchTerm != null)
-{
-    SearchCommand.Execute(sessionManager, terminal, searchTerm, projectFilter);
-    return 0;
-}
-
-if (sessionId != null)
-{
-    // Direct session view
-    await ViewSession(sessionManager, terminal, sessionId);
-    return 0;
-}
-
-// Non-interactive context (piped, no TTY) — list sessions instead of launching TUI
-if (Console.IsInputRedirected)
-{
-    DumpCommand.ListSessionsMarkdown(sessionManager, projectFilter, detectedProjectDir, bookmarksFilter ? bookmarkStore : null);
-    return 0;
-}
-
-// Interactive session picker mode — loop between picker and session view
-var pickerIndex = 0;
-while (true)
-{
-    var picker = new SessionPicker(sessionManager, terminal, pickerIndex, bookmarkStore);
-    var selectedSession = await picker.RunAsync();
-
-    if (selectedSession == null)
-        break;
-
-    // Find index in session list for left/right navigation
-    var currentIndex = ((IList<Session>)sessions).IndexOf(selectedSession);
-    if (currentIndex < 0) currentIndex = 0;
-
+    // Interactive session picker mode
+    var pickerIndex = 0;
     while (true)
     {
-        var result = await ViewSession(sessionManager, terminal, sessions[currentIndex].Id, currentIndex, sessions.Count);
+        var picker = new SessionPicker(sessionManager, terminal, pickerIndex, ctx.BookmarkStore);
+        var selectedSession = await picker.RunAsync();
+        if (selectedSession == null) break;
 
-        if (result == PagerResult.NextSession && currentIndex < sessions.Count - 1)
+        var currentIndex = ((IList<Session>)sessions).IndexOf(selectedSession);
+        if (currentIndex < 0) currentIndex = 0;
+
+        while (true)
         {
-            currentIndex++;
+            var result = await ViewSession(sessionManager, terminal, sessions[currentIndex].Id, ctx, currentIndex, sessions.Count);
+            if (result == PagerResult.NextSession && currentIndex < sessions.Count - 1) currentIndex++;
+            else if (result == PagerResult.PreviousSession && currentIndex > 0) currentIndex--;
+            else break;
         }
-        else if (result == PagerResult.PreviousSession && currentIndex > 0)
-        {
-            currentIndex--;
-        }
-        else
-        {
-            break; // Back to picker
-        }
+        pickerIndex = currentIndex;
     }
+    return 0;
+});
 
-    // Restore picker position to the session we were just viewing
-    pickerIndex = currentIndex;
+// --- Subcommands ---
+rootCommand.Subcommands.Add(BuildListCommand());
+rootCommand.Subcommands.Add(BuildDumpCommand());
+rootCommand.Subcommands.Add(BuildInfoCommand());
+rootCommand.Subcommands.Add(BuildTocCommand());
+rootCommand.Subcommands.Add(BuildSummaryCommand());
+rootCommand.Subcommands.Add(BuildFollowCommand());
+rootCommand.Subcommands.Add(BuildSearchCommand());
+rootCommand.Subcommands.Add(BuildBriefCommand());
+rootCommand.Subcommands.Add(BuildOrientCommand());
+rootCommand.Subcommands.Add(BuildAutoSearchCommand());
+rootCommand.Subcommands.Add(BuildTimelineCommand());
+rootCommand.Subcommands.Add(BuildBookmarkCommand());
+rootCommand.Subcommands.Add(BuildTagCommand());
+rootCommand.Subcommands.Add(BuildUntagCommand());
+rootCommand.Subcommands.Add(BuildStampCommand());
+rootCommand.Subcommands.Add(BuildDecisionCommand());
+rootCommand.Subcommands.Add(BuildPacketCommand());
+rootCommand.Subcommands.Add(BuildSkillCommand());
+
+return await rootCommand.Parse(args).InvokeAsync();
+
+// --- Helpers ---
+
+TraceContext? CreateContext(System.CommandLine.ParseResult pr)
+{
+    var targetDir = pr.GetValue(dirOption);
+    if (targetDir != null) targetDir = Path.GetFullPath(targetDir);
+    return TraceContextFactory.Create(
+        pr.GetValue(pathOption),
+        targetDir,
+        pr.GetValue(allOption),
+        pr.GetValue(projectOption));
 }
 
-return 0;
-
-// View a specific session in the conversation pager
-async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string sid, int index = -1, int total = -1)
+async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string sid, TraceContext ctx, int index = -1, int total = -1)
 {
     var entries = sm.GetSessionEntries(sid);
     if (entries.Count == 0)
     {
-        // Try matching session ID by prefix
-        var allSessions = sm.GetAllSessions();
-        var match = allSessions.FirstOrDefault(s =>
+        var match = sm.GetAllSessions().FirstOrDefault(s =>
             s.Id.StartsWith(sid, StringComparison.OrdinalIgnoreCase));
-
-        if (match != null)
-        {
-            entries = sm.GetSessionEntries(match.Id);
-            sid = match.Id;
-        }
-
-        if (entries.Count == 0)
-        {
-            term.SetColor(TerminalColor.Red);
-            term.AppendLine($"Session not found: {sid}");
-            term.ResetColor();
-            return PagerResult.Quit;
-        }
+        if (match != null) { entries = sm.GetSessionEntries(match.Id); sid = match.Id; }
+        if (entries.Count == 0) { term.SetColor(TerminalColor.Red); term.AppendLine($"Session not found: {sid}"); term.ResetColor(); return PagerResult.Quit; }
     }
 
     var session = sm.GetSession(sid);
     var conversation = new Conversation(sid, entries);
+    SessionContext? sessionCtx = session != null ? new SessionContext(session.Id, session.ProjectName, session.StartTime, Math.Max(0, index), Math.Max(1, total)) : null;
 
-    // Build session context for status bar display
-    SessionContext? ctx = null;
-    if (session != null)
-    {
-        ctx = new SessionContext(
-            session.Id,
-            session.ProjectName,
-            session.StartTime,
-            Math.Max(0, index),
-            Math.Max(1, total));
-    }
-
-    // Use live pager for active sessions
     if (session?.IsActive == true)
     {
-        var filePath = provider.DiscoverLogFiles()
-            .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == sid);
-
+        var filePath = ctx.ScopedProvider.DiscoverLogFiles().FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == sid);
         if (filePath != null)
         {
-            var livePager = new LiveConversationPager(conversation, term, filePath, ctx, bookmarkStore);
+            var livePager = new LiveConversationPager(conversation, term, filePath, sessionCtx, ctx.BookmarkStore);
             return await livePager.RunAsync();
         }
     }
 
-    var pager = new ConversationPager(conversation, term, ctx, bookmarkStore);
+    var pager = new ConversationPager(conversation, term, sessionCtx, ctx.BookmarkStore);
     return await pager.RunAsync();
 }
 
-void ShowHelp()
+// --- Subcommand builders ---
+
+Command BuildListCommand()
 {
-    Console.WriteLine();
-    Console.WriteLine("  AgentTrace - AI Conversation Reader");
-    Console.WriteLine();
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  agent-trace              Interactive picker (scoped to current project)");
-    Console.WriteLine("  agent-trace <session-id> View a specific session");
-    Console.WriteLine("  agent-trace --list       List sessions");
-    Console.WriteLine("  agent-trace --list --plain  List sessions as markdown");
-    Console.WriteLine("  agent-trace --list --tsv    List sessions as tab-separated values");
-    Console.WriteLine("  agent-trace --info <id>  Print session metadata (no content)");
-    Console.WriteLine("  agent-trace --dump <id>  Print full conversation as plain text");
-    Console.WriteLine("  agent-trace --dump <id> --head 50   First 50 lines of dump");
-    Console.WriteLine("  agent-trace --dump <id> --tail 50   Last 50 lines of dump");
-    Console.WriteLine("  agent-trace --dump <id> --turns 5   Show turn 5 (1-indexed)");
-    Console.WriteLine("  agent-trace --dump <id> --turns 9..13  Turns 9 through 13");
-    Console.WriteLine("  agent-trace --dump <id> --last 3    Last 3 turns");
-    Console.WriteLine("  agent-trace --toc <id>              Table of contents (one line per turn)");
-    Console.WriteLine("  agent-trace --dump <id> --speaker assistant  Only assistant text");
-    Console.WriteLine("  agent-trace --dump <id> --compact   Collapse large tool results");
-    Console.WriteLine("  agent-trace --summary <id>          Summarize via claude CLI");
-    Console.WriteLine("  agent-trace --brief                 Digest of 5 most recent sessions");
-    Console.WriteLine("  agent-trace --orient                Single-call orientation digest");
-    Console.WriteLine("  agent-trace --autosearch            Auto-discover breadcrumbs + git context");
-    Console.WriteLine("  agent-trace --timeline              Cross-session chronological view");
-    Console.WriteLine("  agent-trace --timeline --after \"2h ago\"  Timeline filtered by time");
-    Console.WriteLine("  agent-trace --bookmark <id>  Toggle bookmark on a session");
-    Console.WriteLine("  agent-trace --list --plain --bookmarks  List only bookmarked sessions");
-    Console.WriteLine("  agent-trace --list --plain --grep \"term\"  Filter list by content match");
-    Console.WriteLine("  agent-trace --tag <id> <label>   Add a tag to a session");
-    Console.WriteLine("  agent-trace --untag <id> <label> Remove a tag from a session");
-    Console.WriteLine("  agent-trace --list --plain --tags        List with tags column");
-    Console.WriteLine("  agent-trace --list --plain --tags <label>  Filter by tag label");
-    Console.WriteLine("  agent-trace --stamp [message]  Emit structured stamp (session + git state)");
-    Console.WriteLine("  agent-trace --follow     Follow the active session (live tail)");
-    Console.WriteLine("  agent-trace --watch \"pattern\"  Follow + exit on match (tripwire)");
-    Console.WriteLine("  agent-trace --search \"term\"  Search across sessions");
-    Console.WriteLine("  agent-trace --skill      Print LLM skill guide (how to use this tool)");
-    Console.WriteLine();
-    Console.WriteLine("Options:");
-    Console.WriteLine("  -h, --help               Show this help");
-    Console.WriteLine("  -v, --version            Show version");
-    Console.WriteLine("  -p, --path <path>        Custom Claude logs directory");
-    Console.WriteLine("  -l, --list               List sessions non-interactively");
-    Console.WriteLine("  --plain                  Markdown output (no ANSI); use with --list");
-    Console.WriteLine("  --tsv                    Tab-separated output; use with --list");
-    Console.WriteLine("  --info <session-id>      Print session metadata as markdown");
-    Console.WriteLine("  --dump <session-id>      Print full conversation as plain text to stdout");
-    Console.WriteLine("  --toc <session-id>       Print table of contents (one line per turn)");
-    Console.WriteLine("  --head <N>               Output first N lines (use with --dump)");
-    Console.WriteLine("  --tail <N>               Output last N lines (use with --dump)");
-    Console.WriteLine("  --turns <N|M..N>         Turn N (1-indexed), or range M..N (inclusive)");
-    Console.WriteLine("  --last <N>               Last N turns (use with --dump)");
-    Console.WriteLine("  --speaker <user|assistant>  Filter entries by role (use with --dump)");
-    Console.WriteLine("  --compact                Collapse large tool results to one line");
-    Console.WriteLine("  --brief                  Compact digest of 5 most recent sessions");
-    Console.WriteLine("  --orient                 Single-call orientation digest (sessions + breadcrumbs)");
-    Console.WriteLine("  --autosearch             Search for breadcrumbs, commits, bookmarks, tags");
-    Console.WriteLine("  --timeline               Cross-session chronological timeline");
-    Console.WriteLine("  --after <time>           Filter timeline (\"2h ago\", \"1d ago\", date)");
-    Console.WriteLine("  --grep <term>            Filter --list to sessions containing term");
-    Console.WriteLine("  --bookmark <session-id>  Toggle bookmark on a session");
-    Console.WriteLine("  --bookmarks              Show only bookmarked sessions (use with --list)");
-    Console.WriteLine("  --tag <id> <label>       Add a tag to a session");
-    Console.WriteLine("  --untag <id> <label>     Remove a tag from a session");
-    Console.WriteLine("  --tags [label]           Show tags column; optionally filter by label");
-    Console.WriteLine("  --stamp [message]        Emit structured «stamp» with session + git state");
-    Console.WriteLine("  --summary <session-id>   Summarize conversation via claude --print");
-    Console.WriteLine("  --skill                  Print LLM skill guide (SKILL.md)");
-    Console.WriteLine("  -f, --follow             Follow the active session for this project");
-    Console.WriteLine("  -w, --watch <pattern>    Follow + exit with code 2 when pattern matches");
-    Console.WriteLine("  -s, --search <term>      Cross-session search (supports regex)");
-    Console.WriteLine("  -a, --all                Show all sessions (not just current project)");
-    Console.WriteLine("  -C, --dir <path>         Show sessions for a specific directory");
-    Console.WriteLine("  --project <name>         Filter by project name");
-    Console.WriteLine();
-    Console.WriteLine("  By default, sessions are scoped to the current directory's project.");
-    Console.WriteLine("  Use --all to see sessions from all projects.");
-    Console.WriteLine();
-    Console.WriteLine("Pager Controls:");
-    Console.WriteLine("  j/k or ↑/↓               Scroll line");
-    Console.WriteLine("  Ctrl-D/U                 Half page down/up");
-    Console.WriteLine("  Ctrl-F/B or Space        Full page down/up");
-    Console.WriteLine("  gg/G                     Top/bottom");
-    Console.WriteLine("  [/]                      Jump between turns");
-    Console.WriteLine("  ←/→                      Previous/next session");
-    Console.WriteLine("  t                        Toggle tool details");
-    Console.WriteLine("  e                        Toggle thinking blocks");
-    Console.WriteLine("  b                        Toggle bookmark");
-    Console.WriteLine("  /                        Search");
-    Console.WriteLine("  n/N                      Next/previous match");
-    Console.WriteLine("  ?                        Help");
-    Console.WriteLine("  q/Esc                    Back to session list");
-    Console.WriteLine();
+    var cmd = new Command("list", "List sessions");
+    var plainOpt = new Option<bool>("--plain") { Description = "Markdown output (no ANSI)" };
+    var tsvOpt = new Option<bool>("--tsv") { Description = "Tab-separated output" };
+    var bookmarksOpt = new Option<bool>("--bookmarks") { Description = "Show only bookmarked sessions" };
+    var grepOpt = new Option<string?>("--grep") { Description = "Filter by content match" };
+    var tagsOpt = new Option<string?>("--tags") { Description = "Show tags column; optionally filter by label" };
+    tagsOpt.Arity = ArgumentArity.ZeroOrOne;
+    cmd.Options.Add(plainOpt); cmd.Options.Add(tsvOpt); cmd.Options.Add(bookmarksOpt);
+    cmd.Options.Add(grepOpt); cmd.Options.Add(tagsOpt);
+
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var projFilter = pr.GetValue(projectOption);
+        var tagsSpecified = pr.GetResult(tagsOpt) != null;
+        string? tagFilter = tagsSpecified ? (pr.GetValue(tagsOpt) ?? "") : null;
+        var effectiveTagFilter = tagFilter == "" ? null : tagFilter;
+        var showTagStore = tagFilter != null ? ctx.TagStore : null;
+        var bkStore = pr.GetValue(bookmarksOpt) ? ctx.BookmarkStore : null;
+
+        if (pr.GetValue(tsvOpt))
+        {
+            DumpCommand.ListSessionsTsv(sm, projFilter, bkStore, pr.GetValue(grepOpt), showTagStore, effectiveTagFilter);
+            return 0;
+        }
+        if (pr.GetValue(plainOpt))
+        {
+            DumpCommand.ListSessionsMarkdown(sm, projFilter, ctx.DetectedProjectDir, bkStore, pr.GetValue(grepOpt), showTagStore, effectiveTagFilter);
+            return 0;
+        }
+        // Interactive table
+        var console = new SystemConsole();
+        var terminal = new AnsiTerminal(console);
+        ListCommand.Execute(sm, terminal, projFilter);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildDumpCommand()
+{
+    var cmd = new Command("dump", "Print full conversation as plain text");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    var headOpt = new Option<int?>("--head") { Description = "First N lines" };
+    var tailOpt = new Option<int?>("--tail") { Description = "Last N lines" };
+    var turnsOpt = new Option<string?>("--turns") { Description = "Turn N (1-indexed) or range M..N" };
+    var lastOpt = new Option<int?>("--last") { Description = "Last N turns" };
+    var speakerOpt = new Option<string?>("--speaker") { Description = "Filter by role (user|assistant)" };
+    var compactOpt = new Option<bool>("--compact") { Description = "Collapse large tool results" };
+    cmd.Arguments.Add(idArg);
+    cmd.Options.Add(headOpt); cmd.Options.Add(tailOpt); cmd.Options.Add(turnsOpt);
+    cmd.Options.Add(lastOpt); cmd.Options.Add(speakerOpt); cmd.Options.Add(compactOpt);
+
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var ts = pr.GetValue(turnsOpt) != null ? TurnSlice.Parse(pr.GetValue(turnsOpt)!) : default;
+        var last = pr.GetValue(lastOpt);
+        if (last.HasValue && !ts.IsSet) ts = TurnSlice.LastN(last.Value);
+        DumpCommand.PrintConversation(sm, pr.GetValue(idArg)!, pr.GetValue(headOpt), pr.GetValue(tailOpt), ts, pr.GetValue(speakerOpt), pr.GetValue(compactOpt));
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildInfoCommand()
+{
+    var cmd = new Command("info", "Print session metadata");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    cmd.Arguments.Add(idArg);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        DumpCommand.PrintInfo(sm, pr.GetValue(idArg)!, default, ctx.BookmarkStore, ctx.TagStore);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildTocCommand()
+{
+    var cmd = new Command("toc", "Table of contents (one line per turn)");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    cmd.Arguments.Add(idArg);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        DumpCommand.PrintToc(sm, pr.GetValue(idArg)!);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildSummaryCommand()
+{
+    var cmd = new Command("summary", "Summarize conversation via claude CLI");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    var turnsOpt = new Option<string?>("--turns") { Description = "Turn N or range M..N" };
+    var lastOpt = new Option<int?>("--last") { Description = "Last N turns" };
+    cmd.Arguments.Add(idArg); cmd.Options.Add(turnsOpt); cmd.Options.Add(lastOpt);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var ts = pr.GetValue(turnsOpt) != null ? TurnSlice.Parse(pr.GetValue(turnsOpt)!) : default;
+        var last = pr.GetValue(lastOpt);
+        if (last.HasValue && !ts.IsSet) ts = TurnSlice.LastN(last.Value);
+        return await SummaryCommand.RunAsync(sm, pr.GetValue(idArg)!, ts);
+    });
+    return cmd;
+}
+
+Command BuildFollowCommand()
+{
+    var cmd = new Command("follow", "Follow the active session (live tail)");
+    var watchOpt = new Option<string?>("--watch") { Description = "Exit on pattern match (tripwire)" };
+    watchOpt.Aliases.Add("-w");
+    cmd.Options.Add(watchOpt);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        if (ctx.DetectedProjectDir == null)
+        {
+            var dir = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+            Console.Error.WriteLine("No Claude Code project found for current directory.");
+            Console.Error.WriteLine($"  dir: {dir}");
+            Console.Error.WriteLine($"  Use -C <dir> to specify a different project directory.");
+            return 1;
+        }
+        var console = new SystemConsole();
+        var terminal = new AnsiTerminal(console);
+        return await FollowCommand.RunAsync(ctx.BaseProvider, ctx.DetectedProjectDir, terminal, pr.GetValue(watchOpt));
+    });
+    return cmd;
+}
+
+Command BuildSearchCommand()
+{
+    var cmd = new Command("search", "Cross-session search (supports regex)");
+    var termArg = new Argument<string>("term") { Description = "Search term" };
+    cmd.Arguments.Add(termArg);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var console = new SystemConsole();
+        var terminal = new AnsiTerminal(console);
+        SearchCommand.Execute(sm, terminal, pr.GetValue(termArg)!, pr.GetValue(projectOption));
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildBriefCommand()
+{
+    var cmd = new Command("brief", "Compact digest of 5 most recent sessions");
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        DumpCommand.PrintBrief(sm, pr.GetValue(projectOption));
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildOrientCommand()
+{
+    var cmd = new Command("orient", "Single-call orientation digest");
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var sessions = sm.GetAllSessions();
+        var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+        OrientCommand.Execute(sm, projectPath, pr.GetValue(projectOption), ctx.BookmarkStore, ctx.TagStore);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildAutoSearchCommand()
+{
+    var cmd = new Command("autosearch", "Auto-discover breadcrumbs + git context");
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var sessions = sm.GetAllSessions();
+        var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+        AutoSearchCommand.Execute(sm, projectPath, pr.GetValue(projectOption), ctx.BookmarkStore, ctx.TagStore);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildTimelineCommand()
+{
+    var cmd = new Command("timeline", "Cross-session chronological timeline");
+    var afterOpt = new Option<string?>("--after") { Description = "Filter by time (\"2h ago\", \"1d ago\", date)" };
+    cmd.Options.Add(afterOpt);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        TimelineCommand.Execute(sm, pr.GetValue(projectOption), pr.GetValue(afterOpt));
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildBookmarkCommand()
+{
+    var cmd = new Command("bookmark", "Toggle bookmark on a session");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    cmd.Arguments.Add(idArg);
+    cmd.SetAction((pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return Task.FromResult(1);
+        if (ctx.BookmarkStore == null)
+        {
+            Console.Error.WriteLine("Cannot bookmark: no project directory detected. Use -C <dir> to specify one.");
+            return Task.FromResult(1);
+        }
+        var sid = pr.GetValue(idArg)!;
+        var added = ctx.BookmarkStore.Toggle(sid);
+        Console.WriteLine(added ? $"★ Bookmarked {sid}" : $"  Unbookmarked {sid}");
+        return Task.FromResult(0);
+    });
+    return cmd;
+}
+
+Command BuildTagCommand()
+{
+    var cmd = new Command("tag", "Add a tag to a session");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    var labelArg = new Argument<string>("label") { Description = "Tag label" };
+    cmd.Arguments.Add(idArg); cmd.Arguments.Add(labelArg);
+    cmd.SetAction((pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return Task.FromResult(1);
+        if (ctx.TagStore == null)
+        {
+            Console.Error.WriteLine("Cannot tag: no project directory detected. Use -C <dir> to specify one.");
+            return Task.FromResult(1);
+        }
+        var sid = pr.GetValue(idArg)!;
+        var label = pr.GetValue(labelArg)!;
+        var added = ctx.TagStore.AddTag(sid, label);
+        Console.WriteLine(added ? $"Tagged {sid} with '{label}'" : $"Already tagged {sid} with '{label}'");
+        return Task.FromResult(0);
+    });
+    return cmd;
+}
+
+Command BuildUntagCommand()
+{
+    var cmd = new Command("untag", "Remove a tag from a session");
+    var idArg = new Argument<string>("id") { Description = "Session ID" };
+    var labelArg = new Argument<string>("label") { Description = "Tag label" };
+    cmd.Arguments.Add(idArg); cmd.Arguments.Add(labelArg);
+    cmd.SetAction((pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return Task.FromResult(1);
+        if (ctx.TagStore == null)
+        {
+            Console.Error.WriteLine("Cannot untag: no project directory detected. Use -C <dir> to specify one.");
+            return Task.FromResult(1);
+        }
+        var sid = pr.GetValue(idArg)!;
+        var label = pr.GetValue(labelArg)!;
+        var removed = ctx.TagStore.RemoveTag(sid, label);
+        Console.WriteLine(removed ? $"Removed tag '{label}' from {sid}" : $"Tag '{label}' not found on {sid}");
+        return Task.FromResult(0);
+    });
+    return cmd;
+}
+
+Command BuildStampCommand()
+{
+    var cmd = new Command("stamp", "Emit structured stamp (session + git state)");
+    var msgArg = new Argument<string?>("message") { Arity = ArgumentArity.ZeroOrOne };
+    cmd.Arguments.Add(msgArg);
+    cmd.SetAction((pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return Task.FromResult(1);
+        var projectLogPath = ctx.DetectedProjectDir != null
+            ? ctx.BaseProvider.GetProjectLogPath(ctx.DetectedProjectDir)
+            : null;
+        var projectPath = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+        StampCommand.Execute(projectLogPath, projectPath, pr.GetValue(msgArg));
+        return Task.FromResult(0);
+    });
+    return cmd;
+}
+
+Command BuildDecisionCommand()
+{
+    var cmd = new Command("decision", "Record an architectural/design decision");
+    var choseArg = new Argument<string>("chose") { Description = "What was chosen" };
+    var overOpt = new Option<string?>("--over") { Description = "Alternatives considered" };
+    var becauseOpt = new Option<string?>("--because") { Description = "Reason for the choice" };
+    cmd.Arguments.Add(choseArg);
+    cmd.Options.Add(overOpt); cmd.Options.Add(becauseOpt);
+    cmd.SetAction((pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return Task.FromResult(1);
+        var projectLogPath = ctx.DetectedProjectDir != null
+            ? ctx.BaseProvider.GetProjectLogPath(ctx.DetectedProjectDir)
+            : null;
+        var projectPath = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+        DecisionCommand.Execute(projectLogPath, projectPath, pr.GetValue(choseArg)!, pr.GetValue(overOpt), pr.GetValue(becauseOpt));
+        return Task.FromResult(0);
+    });
+    return cmd;
+}
+
+Command BuildPacketCommand()
+{
+    var cmd = new Command("packet", "Dense structured context packet for agent consumption");
+    var depthOpt = new Option<int?>("--depth") { Description = "Number of recent sessions to include" };
+    cmd.Options.Add(depthOpt);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var ctx = CreateContext(pr);
+        if (ctx == null) return 1;
+        var sm = new SessionManager();
+        await sm.LoadFromProviderAsync(ctx.ScopedProvider);
+        var sessions = sm.GetAllSessions();
+        var projectPath = sessions.FirstOrDefault()?.ProjectPath ?? pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
+        PacketCommand.Execute(sm, projectPath, pr.GetValue(projectOption), pr.GetValue(depthOpt) ?? 5);
+        return 0;
+    });
+    return cmd;
+}
+
+Command BuildSkillCommand()
+{
+    var cmd = new Command("skill", "Print LLM skill guide (SKILL.md)");
+    cmd.SetAction((pr, ct) =>
+    {
+        SkillCommand.Execute();
+        return Task.FromResult(0);
+    });
+    return cmd;
 }

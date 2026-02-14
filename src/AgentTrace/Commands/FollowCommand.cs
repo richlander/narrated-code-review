@@ -1,6 +1,7 @@
 using AgentLogs.Domain;
 using AgentLogs.Parsing;
 using AgentLogs.Providers;
+using AgentTrace.Services;
 using AgentTrace.UI;
 using Microsoft.Extensions.Terminal;
 
@@ -37,7 +38,7 @@ public static class FollowCommand
         if (age > TimeSpan.FromMinutes(10))
         {
             terminal.SetColor(TerminalColor.Yellow);
-            terminal.AppendLine($"Warning: Most recent session was last active {FormatAge(age)} ago.");
+            terminal.AppendLine($"Warning: Most recent session was last active {Formatting.FormatAge(age, withSuffix: false)} ago.");
             terminal.ResetColor();
             terminal.AppendLine($"  file: {Path.GetFileName(activeFile)}");
             terminal.AppendLine();
@@ -90,14 +91,5 @@ public static class FollowCommand
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .FirstOrDefault()
             ?.FullName;
-    }
-
-    private static string FormatAge(TimeSpan age)
-    {
-        if (age.TotalMinutes < 60)
-            return $"{(int)age.TotalMinutes}m";
-        if (age.TotalHours < 24)
-            return $"{(int)age.TotalHours}h {age.Minutes}m";
-        return $"{(int)age.TotalDays}d";
     }
 }

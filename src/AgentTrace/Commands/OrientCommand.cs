@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AgentLogs.Domain;
 using AgentLogs.Services;
 using AgentTrace.Services;
@@ -15,7 +14,7 @@ public static class OrientCommand
     public static void Execute(SessionManager sessionManager, string? projectPath, string? projectFilter = null,
         BookmarkStore? bookmarkStore = null, TagStore? tagStore = null)
     {
-        var sessions = DumpCommand.FilterSessions(sessionManager, projectFilter);
+        var sessions = SessionHelper.FilterSessions(sessionManager, projectFilter);
         var writer = new MarkoutWriter(Console.Out);
         writer.WriteHeading(1, "Orientation");
 
@@ -32,15 +31,17 @@ public static class OrientCommand
         {
             var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
             var status = session.IsActive ? "active" : "done";
-            var age = FormatAge(DateTime.UtcNow - session.StartTime);
-            var goal = GetGoal(sessionManager, session.Id);
+            var age = Formatting.FormatAge(DateTime.UtcNow - session.StartTime);
+            var entries = sessionManager.GetSessionEntries(session.Id);
+            var conversation = new Conversation(session.Id, entries);
+            var goal = SessionHelper.GetGoal(conversation);
             writer.WriteListItem($"{shortId} ({age}, {status}): {goal}");
         }
 
         // --- Previous Session detail ---
         // Pick the most interesting recent session: skip active sessions with ≤2 turns (likely the current agent warming up)
         var previousSession = sessions
-            .FirstOrDefault(s => !(s.IsActive && GetTurnCount(sessionManager, s.Id) <= 2));
+            .FirstOrDefault(s => !(s.IsActive && SessionHelper.GetTurnCount(sessionManager, s.Id) <= 2));
         previousSession ??= sessions[0]; // fallback to most recent
 
         var prevEntries = sessionManager.GetSessionEntries(previousSession.Id);
@@ -49,9 +50,9 @@ public static class OrientCommand
 
         writer.WriteHeading(2, $"Previous Session: {prevShortId}");
         writer.WriteCompactFields(
-            new MarkoutField("Goal", GetGoal(sessionManager, previousSession.Id)),
+            new MarkoutField("Goal", SessionHelper.GetGoal(prevConversation)),
             new MarkoutField("Turns", prevConversation.Turns.Count.ToString()),
-            new MarkoutField("Duration", FormatDuration(previousSession.Duration)),
+            new MarkoutField("Duration", Formatting.FormatDuration(previousSession.Duration)),
             new MarkoutField("Tools", previousSession.ToolCallCount.ToString()));
 
         // Git commits during previous session
@@ -101,35 +102,6 @@ public static class OrientCommand
         writer.Flush();
     }
 
-    private static string GetGoal(SessionManager sessionManager, string sessionId)
-    {
-        var entries = sessionManager.GetSessionEntries(sessionId);
-        if (entries.Count == 0) return "(empty)";
-        var conversation = new Conversation(sessionId, entries);
-
-        var goalMessage = conversation.Turns
-            .Select(t => t.UserMessage)
-            .Where(m => !string.IsNullOrWhiteSpace(m))
-            .Select(m =>
-            {
-                var cont = ContinuationDetector.Parse(m);
-                return cont.IsContinuation ? cont.SubstantiveContent : m;
-            })
-            .FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
-
-        if (goalMessage == null) return "(no user message)";
-        var single = goalMessage.ReplaceLineEndings(" ");
-        return single.Length > 80 ? single[..80] + "..." : single;
-    }
-
-    private static int GetTurnCount(SessionManager sessionManager, string sessionId)
-    {
-        var entries = sessionManager.GetSessionEntries(sessionId);
-        if (entries.Count == 0) return 0;
-        var conversation = new Conversation(sessionId, entries);
-        return conversation.Turns.Count;
-    }
-
     private static string GetTurnPreview(Turn turn)
     {
         // Try user message first
@@ -156,8 +128,7 @@ public static class OrientCommand
         if (string.IsNullOrWhiteSpace(preview))
             return "(tool calls only)";
 
-        var single = preview.ReplaceLineEndings(" ");
-        return single.Length > 80 ? single[..80] + "..." : single;
+        return Formatting.Truncate(preview, 80);
     }
 
     private static List<string> GetGitCommits(Session session)
@@ -170,7 +141,7 @@ public static class OrientCommand
         {
             var after = session.StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
             var before = session.LastActivityTime.ToUniversalTime().AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ssZ");
-            var output = RunGit(session.ProjectPath, $"log --oneline --after=\"{after}\" --before=\"{before}\"");
+            var output = GitRunner.RunGit(session.ProjectPath, $"log --oneline --after=\"{after}\" --before=\"{before}\"");
             if (output != null)
             {
                 foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
@@ -189,9 +160,9 @@ public static class OrientCommand
 
     private static GitStatus GetUncommittedState(string projectPath)
     {
-        var staged = ParseFileList(RunGit(projectPath, "diff --name-only --cached"));
-        var modified = ParseFileList(RunGit(projectPath, "diff --name-only"));
-        var untracked = ParseFileList(RunGit(projectPath, "ls-files --others --exclude-standard"));
+        var staged = ParseFileList(GitRunner.RunGit(projectPath, "diff --name-only --cached"));
+        var modified = ParseFileList(GitRunner.RunGit(projectPath, "diff --name-only"));
+        var untracked = ParseFileList(GitRunner.RunGit(projectPath, "ls-files --others --exclude-standard"));
         return new GitStatus(staged, modified, untracked);
     }
 
@@ -220,10 +191,10 @@ public static class OrientCommand
                 var ctx = stampMatcher.FindMatch(entry);
                 if (ctx == null) continue;
 
-                var fullText = ExtractStampText(entry, stampMatcher);
+                var fullText = StampParser.ExtractStampText(entry, stampMatcher);
                 if (fullText == null) continue;
 
-                var message = ParseStampField(fullText, "message");
+                var message = StampParser.ParseStampField(fullText, "message");
                 if (message == null) continue;
 
                 var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
@@ -233,10 +204,39 @@ public static class OrientCommand
             if (results.Count >= 3) break;
         }
 
+        // Find decisions (most recent first, limit to 3)
+        var decisionMatcher = new EntryMatcher("«decision:");
+        var decisionCount = 0;
+        foreach (var session in sessions.Take(5))
+        {
+            var dEntries = sessionManager.GetSessionEntries(session.Id);
+            foreach (var entry in dEntries)
+            {
+                var ctx = decisionMatcher.FindMatch(entry);
+                if (ctx == null) continue;
+
+                var fullText = StampParser.ExtractDecisionText(entry, decisionMatcher);
+                if (fullText == null) continue;
+
+                var chose = StampParser.ParseStampField(fullText, "chose");
+                if (chose == null) continue;
+
+                var over = StampParser.ParseStampField(fullText, "over");
+                var shortId = session.Id.Length > 7 ? session.Id[..7] : session.Id;
+                var desc = over != null
+                    ? $"Decision: \"{chose}\" over \"{over}\" (session {shortId})"
+                    : $"Decision: \"{chose}\" (session {shortId})";
+                results.Add(desc);
+                decisionCount++;
+                if (decisionCount >= 3) break;
+            }
+            if (decisionCount >= 3) break;
+        }
+
         // Commit breadcrumbs: check if recent git commits are mentioned in sessions
         if (!string.IsNullOrEmpty(projectPath))
         {
-            var log = RunGit(projectPath, "log --oneline -5");
+            var log = GitRunner.RunGit(projectPath, "log --oneline -5");
             if (log != null)
             {
                 var hashes = log.Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -266,79 +266,5 @@ public static class OrientCommand
         }
 
         return results;
-    }
-
-    private static string? ExtractStampText(Entry entry, EntryMatcher matcher)
-    {
-        if (entry is UserEntry user)
-        {
-            foreach (var block in user.ContentBlocks)
-            {
-                if (block is ToolResultBlock toolResult && toolResult.Content != null
-                    && matcher.IsMatch(toolResult.Content) && toolResult.Content.Contains("«/stamp»"))
-                    return toolResult.Content;
-            }
-            if (user.Content != null && matcher.IsMatch(user.Content) && user.Content.Contains("«/stamp»"))
-                return user.Content;
-        }
-
-        if (entry is AssistantEntry assistant && assistant.TextContent != null
-            && matcher.IsMatch(assistant.TextContent) && assistant.TextContent.Contains("«/stamp»"))
-            return assistant.TextContent;
-
-        return null;
-    }
-
-    private static string? ParseStampField(string text, string field)
-    {
-        var match = System.Text.RegularExpressions.Regex.Match(text,
-            $@"^\s*{field}:\s*(.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
-        return match.Success ? match.Groups[1].Value.Trim() : null;
-    }
-
-    private static string? RunGit(string workingDirectory, string arguments)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("git")
-            {
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null) return null;
-
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(5000);
-
-            return process.ExitCode == 0 ? output : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static string FormatAge(TimeSpan age)
-    {
-        if (age.TotalMinutes < 60)
-            return $"{(int)age.TotalMinutes}m ago";
-        if (age.TotalHours < 24)
-            return $"{(int)age.TotalHours}h ago";
-        return $"{(int)age.TotalDays}d ago";
-    }
-
-    private static string FormatDuration(TimeSpan duration)
-    {
-        if (duration.TotalSeconds < 60)
-            return $"{(int)duration.TotalSeconds}s";
-        if (duration.TotalMinutes < 60)
-            return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
-        return $"{(int)duration.TotalHours}h {duration.Minutes}m";
     }
 }

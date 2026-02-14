@@ -25,6 +25,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../AgentLogs/AgentLogs.csproj" />
     <!-- TODO: Replace with NuGet package once published -->
     <ProjectReference Include="../../../terminal-experiments/src/Microsoft.Extensions.Terminal/Microsoft.Extensions.Terminal.csproj" />

@@ -58,7 +58,7 @@ public static partial class TimelineCommand
                     turn.Number + 1,
                     turn.ToolUses.Count,
                     turn.Duration,
-                    Truncate(content ?? "", 60)));
+                    Formatting.Truncate(content ?? "", 60)));
             }
         }
 
@@ -79,7 +79,7 @@ public static partial class TimelineCommand
                 entry.SessionId,
                 entry.Turn.ToString(),
                 entry.Tools.ToString(),
-                FormatDuration(entry.Duration),
+                Formatting.FormatDuration(entry.Duration),
                 entry.Content);
         }
 
@@ -91,7 +91,7 @@ public static partial class TimelineCommand
     /// Parses relative time expressions like "2h ago", "1d ago", "30m ago"
     /// or absolute dates like "2026-02-12".
     /// </summary>
-    internal static DateTime? ParseRelativeTime(string input)
+    public static DateTime? ParseRelativeTime(string input)
     {
         var match = RelativeTimeRegex().Match(input);
         if (match.Success)
@@ -113,23 +113,6 @@ public static partial class TimelineCommand
             return dt.ToUniversalTime();
 
         return null;
-    }
-
-    private static string FormatDuration(TimeSpan duration)
-    {
-        if (duration.TotalSeconds < 60)
-            return $"{(int)duration.TotalSeconds}s";
-        if (duration.TotalMinutes < 60)
-            return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
-        return $"{(int)duration.TotalHours}h {duration.Minutes}m";
-    }
-
-    private static string Truncate(string text, int maxLength)
-    {
-        var singleLine = text.ReplaceLineEndings(" ");
-        if (singleLine.Length <= maxLength)
-            return singleLine;
-        return string.Concat(singleLine.AsSpan(0, maxLength), "...");
     }
 
     [GeneratedRegex(@"^(\d+)\s*(m|h|d|w)\s*ago$", RegexOptions.IgnoreCase)]
