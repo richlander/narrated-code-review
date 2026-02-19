@@ -16,13 +16,60 @@ public static class TraceContextFactory
 {
     /// <summary>
     /// Creates the app context. Returns null and prints an error if targetDir is specified but not found.
+    /// By default, includes both Claude Code and Copilot logs.
     /// </summary>
-    public static TraceContext? Create(string? customPath, string? targetDir, bool showAll, string? projectFilter, bool copilot = false)
+    public static TraceContext? Create(string? customPath, string? targetDir, bool showAll, string? projectFilter, bool claudeOnly = false, bool copilotOnly = false)
     {
-        if (copilot)
+        if (copilotOnly)
             return CreateCopilot(customPath, targetDir);
 
-        return CreateClaudeCode(customPath, targetDir, showAll, projectFilter);
+        if (claudeOnly)
+            return CreateClaudeCode(customPath, targetDir, showAll, projectFilter);
+
+        // Default: both providers
+        return CreateCombined(customPath, targetDir, showAll, projectFilter);
+    }
+
+    private static TraceContext? CreateCombined(string? customPath, string? targetDir, bool showAll, string? projectFilter)
+    {
+        var claudeBase = customPath != null
+            ? new ClaudeCodeProvider(customPath)
+            : new ClaudeCodeProvider();
+
+        var copilotBase = new CopilotProvider();
+
+        string? detectedProjectDir = null;
+        if (targetDir != null)
+        {
+            detectedProjectDir = claudeBase.FindProjectDir(targetDir);
+            // Don't fail if Claude Code project not found — Copilot might still have sessions
+        }
+        else if (!showAll && projectFilter == null && customPath == null)
+        {
+            detectedProjectDir = claudeBase.FindProjectDir(Environment.CurrentDirectory);
+        }
+
+        // Build scoped providers
+        ILogProvider claudeScoped = detectedProjectDir != null
+            ? new ClaudeCodeProvider(claudeBase.BasePath) { ProjectDirFilter = detectedProjectDir }
+            : claudeBase;
+
+        ILogProvider copilotScoped = targetDir != null
+            ? new CopilotProvider(copilotBase.BasePath) { WorkingDirectoryFilter = Path.GetFullPath(targetDir) }
+            : copilotBase;
+
+        var baseProvider = new CompositeProvider(claudeBase, copilotBase);
+        var scopedProvider = new CompositeProvider(claudeScoped, copilotScoped);
+
+        BookmarkStore? bookmarkStore = detectedProjectDir != null
+            ? new BookmarkStore(claudeBase.GetProjectLogPath(detectedProjectDir))
+            : null;
+
+        TagStore? tagStore = detectedProjectDir != null
+            ? new TagStore(claudeBase.GetProjectLogPath(detectedProjectDir))
+            : null;
+
+        return new TraceContext(baseProvider, scopedProvider, detectedProjectDir, bookmarkStore, tagStore);
     }
 
     private static TraceContext? CreateClaudeCode(string? customPath, string? targetDir, bool showAll, string? projectFilter)

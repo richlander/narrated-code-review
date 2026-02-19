@@ -20,7 +20,7 @@ public static class FollowCommand
         var projectLogPath = provider.GetProjectLogPath(projectDirName);
 
         // Find the most recently modified JSONL file
-        var activeFile = FindActiveFile(projectLogPath);
+        var activeFile = FindActiveFile(provider);
         if (activeFile == null)
         {
             terminal.SetColor(TerminalColor.Red);
@@ -43,7 +43,7 @@ public static class FollowCommand
             terminal.AppendLine();
         }
 
-        var sessionId = Path.GetFileNameWithoutExtension(activeFile);
+        var sessionId = provider.ExtractSessionId(activeFile);
 
         terminal.SetColor(TerminalColor.Blue);
         terminal.Append("Following session ");
@@ -83,12 +83,9 @@ public static class FollowCommand
         return 0;
     }
 
-    private static string? FindActiveFile(string projectLogPath)
+    private static string? FindActiveFile(ILogProvider provider)
     {
-        if (!Directory.Exists(projectLogPath))
-            return null;
-
-        return Directory.EnumerateFiles(projectLogPath, "*.jsonl")
+        return provider.DiscoverLogFiles()
             .Select(f => new FileInfo(f))
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .FirstOrDefault()

@@ -40,12 +40,16 @@ public class CopilotProvider : ILogProvider
         if (!Directory.Exists(BasePath))
             yield break;
 
-        foreach (var jsonlFile in Directory.EnumerateFiles(BasePath, "*.jsonl"))
+        foreach (var subdir in Directory.EnumerateDirectories(BasePath))
         {
-            if (WorkingDirectoryFilter != null && !SessionMatchesDirectory(jsonlFile, WorkingDirectoryFilter))
+            var eventsFile = Path.Combine(subdir, "events.jsonl");
+            if (!File.Exists(eventsFile))
                 continue;
 
-            yield return jsonlFile;
+            if (WorkingDirectoryFilter != null && !SessionMatchesDirectory(eventsFile, WorkingDirectoryFilter))
+                continue;
+
+            yield return eventsFile;
         }
     }
 
@@ -102,5 +106,14 @@ public class CopilotProvider : ILogProvider
     {
         var state = new CopilotLineParserState();
         return state.ParseLine;
+    }
+
+    /// <summary>
+    /// Extracts session ID from a log file path (UUID/events.jsonl format).
+    /// </summary>
+    public string ExtractSessionId(string filePath)
+    {
+        var parentDir = Path.GetDirectoryName(filePath);
+        return parentDir != null ? Path.GetFileName(parentDir) : Path.GetFileNameWithoutExtension(filePath);
     }
 }

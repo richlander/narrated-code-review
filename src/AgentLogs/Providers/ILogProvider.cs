@@ -43,6 +43,11 @@ public interface ILogProvider
     Func<string, Entry?> CreateLineParser() => _ => null;
 
     /// <summary>
+    /// Creates a line parser for a specific file (used by composite providers).
+    /// </summary>
+    Func<string, Entry?> CreateLineParserForFile(string filePath) => CreateLineParser();
+
+    /// <summary>
     /// Finds the provider-specific project directory for a given working directory.
     /// Returns null if the provider doesn't support project grouping.
     /// </summary>
@@ -53,4 +58,10 @@ public interface ILogProvider
     /// Returns BasePath when projectDirName is null.
     /// </summary>
     string GetProjectLogPath(string? projectDirName) => BasePath;
+
+    /// <summary>
+    /// Extracts session ID from a log file path.
+    /// Default implementation uses the file name without extension.
+    /// </summary>
+    string ExtractSessionId(string filePath) => Path.GetFileNameWithoutExtension(filePath);
 }

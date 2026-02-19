@@ -23,7 +23,10 @@ var dirOption = new Option<string?>("--dir") { Description = "Show sessions for 
 dirOption.Aliases.Add("-C");
 dirOption.Recursive = true;
 
-var copilotOption = new Option<bool>("--copilot") { Description = "Use GitHub Copilot logs instead of Claude Code" };
+var claudeOption = new Option<bool>("--claude") { Description = "Show only Claude Code logs" };
+claudeOption.Recursive = true;
+
+var copilotOption = new Option<bool>("--copilot") { Description = "Show only GitHub Copilot logs" };
 copilotOption.Recursive = true;
 
 // Root command
@@ -32,6 +35,7 @@ rootCommand.Options.Add(pathOption);
 rootCommand.Options.Add(projectOption);
 rootCommand.Options.Add(allOption);
 rootCommand.Options.Add(dirOption);
+rootCommand.Options.Add(claudeOption);
 rootCommand.Options.Add(copilotOption);
 
 var sessionArg = new Argument<string?>("session-id") { Arity = ArgumentArity.ZeroOrOne };
@@ -126,6 +130,7 @@ TraceContext? CreateContext(System.CommandLine.ParseResult pr)
         targetDir,
         pr.GetValue(allOption),
         pr.GetValue(projectOption),
+        pr.GetValue(claudeOption),
         pr.GetValue(copilotOption));
 }
 
@@ -146,10 +151,10 @@ async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string si
 
     if (session?.IsActive == true)
     {
-        var filePath = ctx.ScopedProvider.DiscoverLogFiles().FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == sid);
+        var filePath = ctx.ScopedProvider.DiscoverLogFiles().FirstOrDefault(f => ctx.ScopedProvider.ExtractSessionId(f) == sid);
         if (filePath != null)
         {
-            var livePager = new LiveConversationPager(conversation, term, filePath, ctx.BaseProvider.CreateLineParser(), sessionCtx, ctx.BookmarkStore);
+            var livePager = new LiveConversationPager(conversation, term, filePath, ctx.ScopedProvider.CreateLineParserForFile(filePath), sessionCtx, ctx.BookmarkStore);
             return await livePager.RunAsync();
         }
     }
@@ -298,7 +303,7 @@ Command BuildFollowCommand()
     {
         var ctx = CreateContext(pr);
         if (ctx == null) return 1;
-        if (ctx.DetectedProjectDir == null && !pr.GetValue(copilotOption))
+        if (ctx.DetectedProjectDir == null && pr.GetValue(claudeOption))
         {
             var dir = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
             Console.Error.WriteLine("No Claude Code project found for current directory.");
