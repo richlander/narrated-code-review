@@ -60,10 +60,12 @@ public partial class ClaudeCodeProvider : ILogProvider
     /// <summary>
     /// Gets the full filesystem path to a project's log directory.
     /// </summary>
-    public string GetProjectLogPath(string projectDirName)
+    public string GetProjectLogPath(string? projectDirName)
     {
-        return Path.Combine(BasePath, projectDirName);
+        return projectDirName != null ? Path.Combine(BasePath, projectDirName) : BasePath;
     }
+
+    public Func<string, Entry?> CreateLineParser() => EntryParser.ParseLineFull;
 
     public IEnumerable<string> DiscoverLogFiles()
     {

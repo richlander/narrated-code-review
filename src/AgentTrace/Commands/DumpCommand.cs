@@ -397,7 +397,7 @@ public static class DumpCommand
             var tags = allTags != null && allTags.TryGetValue(session.Id, out var t) ? $" [{string.Join(", ", t)}]" : "";
 
             writer.WriteHeading(2, $"{shortId}{bookmark}{tags}");
-            writer.WriteCompactFields(
+            writer.WriteFieldList(
                 new MarkoutField("Age", age),
                 new MarkoutField("Status", status),
                 new MarkoutField("Turns", SessionHelper.GetTurnCount(sessionManager, session.Id).ToString()),

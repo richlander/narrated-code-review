@@ -49,7 +49,7 @@ public static class OrientCommand
         var prevShortId = previousSession.Id.Length > 7 ? previousSession.Id[..7] : previousSession.Id;
 
         writer.WriteHeading(2, $"Previous Session: {prevShortId}");
-        writer.WriteCompactFields(
+        writer.WriteFieldList(
             new MarkoutField("Goal", SessionHelper.GetGoal(prevConversation)),
             new MarkoutField("Turns", prevConversation.Turns.Count.ToString()),
             new MarkoutField("Duration", Formatting.FormatDuration(previousSession.Duration)),

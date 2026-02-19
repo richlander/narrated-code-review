@@ -23,12 +23,16 @@ var dirOption = new Option<string?>("--dir") { Description = "Show sessions for 
 dirOption.Aliases.Add("-C");
 dirOption.Recursive = true;
 
+var copilotOption = new Option<bool>("--copilot") { Description = "Use GitHub Copilot logs instead of Claude Code" };
+copilotOption.Recursive = true;
+
 // Root command
 var rootCommand = new RootCommand("AgentTrace - AI Conversation Reader");
 rootCommand.Options.Add(pathOption);
 rootCommand.Options.Add(projectOption);
 rootCommand.Options.Add(allOption);
 rootCommand.Options.Add(dirOption);
+rootCommand.Options.Add(copilotOption);
 
 var sessionArg = new Argument<string?>("session-id") { Arity = ArgumentArity.ZeroOrOne };
 rootCommand.Arguments.Add(sessionArg);
@@ -121,7 +125,8 @@ TraceContext? CreateContext(System.CommandLine.ParseResult pr)
         pr.GetValue(pathOption),
         targetDir,
         pr.GetValue(allOption),
-        pr.GetValue(projectOption));
+        pr.GetValue(projectOption),
+        pr.GetValue(copilotOption));
 }
 
 async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string sid, TraceContext ctx, int index = -1, int total = -1)
@@ -144,7 +149,7 @@ async Task<PagerResult> ViewSession(SessionManager sm, ITerminal term, string si
         var filePath = ctx.ScopedProvider.DiscoverLogFiles().FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == sid);
         if (filePath != null)
         {
-            var livePager = new LiveConversationPager(conversation, term, filePath, sessionCtx, ctx.BookmarkStore);
+            var livePager = new LiveConversationPager(conversation, term, filePath, ctx.BaseProvider.CreateLineParser(), sessionCtx, ctx.BookmarkStore);
             return await livePager.RunAsync();
         }
     }
@@ -293,7 +298,7 @@ Command BuildFollowCommand()
     {
         var ctx = CreateContext(pr);
         if (ctx == null) return 1;
-        if (ctx.DetectedProjectDir == null)
+        if (ctx.DetectedProjectDir == null && !pr.GetValue(copilotOption))
         {
             var dir = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
             Console.Error.WriteLine("No Claude Code project found for current directory.");
@@ -474,7 +479,7 @@ Command BuildStampCommand()
         if (ctx == null) return Task.FromResult(1);
         var projectLogPath = ctx.DetectedProjectDir != null
             ? ctx.BaseProvider.GetProjectLogPath(ctx.DetectedProjectDir)
-            : null;
+            : ctx.BaseProvider.GetProjectLogPath(null);
         var projectPath = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
         StampCommand.Execute(projectLogPath, projectPath, pr.GetValue(msgArg));
         return Task.FromResult(0);
@@ -496,7 +501,7 @@ Command BuildDecisionCommand()
         if (ctx == null) return Task.FromResult(1);
         var projectLogPath = ctx.DetectedProjectDir != null
             ? ctx.BaseProvider.GetProjectLogPath(ctx.DetectedProjectDir)
-            : null;
+            : ctx.BaseProvider.GetProjectLogPath(null);
         var projectPath = pr.GetValue(dirOption) ?? Environment.CurrentDirectory;
         DecisionCommand.Execute(projectLogPath, projectPath, pr.GetValue(choseArg)!, pr.GetValue(overOpt), pr.GetValue(becauseOpt));
         return Task.FromResult(0);

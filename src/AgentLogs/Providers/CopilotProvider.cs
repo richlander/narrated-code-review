@@ -13,6 +13,12 @@ public class CopilotProvider : ILogProvider
 
     public string BasePath { get; }
 
+    /// <summary>
+    /// When set, only discover sessions that contain file paths under this directory.
+    /// Uses a fast text scan of the raw JSONL — no full parse needed.
+    /// </summary>
+    public string? WorkingDirectoryFilter { get; init; }
+
     public CopilotProvider()
         : this(GetDefaultBasePath())
     {
@@ -34,11 +40,33 @@ public class CopilotProvider : ILogProvider
         if (!Directory.Exists(BasePath))
             yield break;
 
-        // Find all .jsonl files in the session-state directory
         foreach (var jsonlFile in Directory.EnumerateFiles(BasePath, "*.jsonl"))
         {
+            if (WorkingDirectoryFilter != null && !SessionMatchesDirectory(jsonlFile, WorkingDirectoryFilter))
+                continue;
+
             yield return jsonlFile;
         }
+    }
+
+    /// <summary>
+    /// Fast text scan: checks whether a session file contains any absolute file paths
+    /// under the given directory. Looks for "path":"/dir/..." patterns in raw JSONL.
+    /// </summary>
+    private static bool SessionMatchesDirectory(string filePath, string directory)
+    {
+        var normalized = directory.TrimEnd('/');
+        var searchPattern = $"\"{normalized}/";
+
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 4096);
+        using var reader = new StreamReader(stream);
+
+        while (reader.ReadLine() is { } line)
+        {
+            if (line.Contains(searchPattern, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
     }
 
     public async IAsyncEnumerable<Entry> GetAllEntriesAsync()
@@ -68,5 +96,11 @@ public class CopilotProvider : ILogProvider
         // For Copilot, we need to read the session.start event to get working directory
         // For now, return the session ID as the identifier
         return Path.GetFileNameWithoutExtension(filePath);
+    }
+
+    public Func<string, Entry?> CreateLineParser()
+    {
+        var state = new CopilotLineParserState();
+        return state.ParseLine;
     }
 }

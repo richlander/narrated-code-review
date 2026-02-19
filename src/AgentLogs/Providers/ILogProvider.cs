@@ -36,4 +36,21 @@ public interface ILogProvider
     /// Extracts project name from a log file path.
     /// </summary>
     string? ExtractProjectName(string filePath);
+
+    /// <summary>
+    /// Creates a line parser for incremental (live-tail) parsing.
+    /// </summary>
+    Func<string, Entry?> CreateLineParser() => _ => null;
+
+    /// <summary>
+    /// Finds the provider-specific project directory for a given working directory.
+    /// Returns null if the provider doesn't support project grouping.
+    /// </summary>
+    string? FindProjectDir(string workingDirectory) => null;
+
+    /// <summary>
+    /// Gets the full filesystem path to a project's log directory.
+    /// Returns BasePath when projectDirName is null.
+    /// </summary>
+    string GetProjectLogPath(string? projectDirName) => BasePath;
 }

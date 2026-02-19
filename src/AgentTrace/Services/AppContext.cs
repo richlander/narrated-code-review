@@ -6,8 +6,8 @@ namespace AgentTrace.Services;
 /// Shared provider/store context — replaces the 35 lines of setup in Program.cs.
 /// </summary>
 public record TraceContext(
-    ClaudeCodeProvider BaseProvider,
-    ClaudeCodeProvider ScopedProvider,
+    ILogProvider BaseProvider,
+    ILogProvider ScopedProvider,
     string? DetectedProjectDir,
     BookmarkStore? BookmarkStore,
     TagStore? TagStore);
@@ -17,7 +17,15 @@ public static class TraceContextFactory
     /// <summary>
     /// Creates the app context. Returns null and prints an error if targetDir is specified but not found.
     /// </summary>
-    public static TraceContext? Create(string? customPath, string? targetDir, bool showAll, string? projectFilter)
+    public static TraceContext? Create(string? customPath, string? targetDir, bool showAll, string? projectFilter, bool copilot = false)
+    {
+        if (copilot)
+            return CreateCopilot(customPath, targetDir);
+
+        return CreateClaudeCode(customPath, targetDir, showAll, projectFilter);
+    }
+
+    private static TraceContext? CreateClaudeCode(string? customPath, string? targetDir, bool showAll, string? projectFilter)
     {
         var baseProvider = customPath != null
             ? new ClaudeCodeProvider(customPath)
@@ -52,5 +60,24 @@ public static class TraceContextFactory
             : null;
 
         return new TraceContext(baseProvider, scopedProvider, detectedProjectDir, bookmarkStore, tagStore);
+    }
+
+    private static TraceContext CreateCopilot(string? customPath, string? targetDir)
+    {
+        var baseProvider = customPath != null
+            ? new CopilotProvider(customPath)
+            : new CopilotProvider();
+
+        // When -C is specified, create a scoped provider that filters sessions
+        // by scanning for file paths under the target directory
+        var scopedProvider = targetDir != null
+            ? new CopilotProvider(baseProvider.BasePath) { WorkingDirectoryFilter = Path.GetFullPath(targetDir) }
+            : baseProvider;
+
+        // Copilot has no project grouping — bookmarks/tags stored under BasePath
+        var bookmarkStore = new BookmarkStore(baseProvider.BasePath);
+        var tagStore = new TagStore(baseProvider.BasePath);
+
+        return new TraceContext(baseProvider, scopedProvider, null, bookmarkStore, tagStore);
     }
 }

@@ -1,5 +1,4 @@
 using AgentLogs.Domain;
-using AgentLogs.Parsing;
 using AgentLogs.Providers;
 using AgentTrace.Services;
 using AgentTrace.UI;
@@ -13,8 +12,8 @@ namespace AgentTrace.Commands;
 public static class FollowCommand
 {
     public static async Task<int> RunAsync(
-        ClaudeCodeProvider provider,
-        string projectDirName,
+        ILogProvider provider,
+        string? projectDirName,
         ITerminal terminal,
         string? watchPattern = null)
     {
@@ -25,10 +24,10 @@ public static class FollowCommand
         if (activeFile == null)
         {
             terminal.SetColor(TerminalColor.Red);
-            terminal.AppendLine("No active session found for this project.");
+            terminal.AppendLine($"No active {provider.Name} session found.");
             terminal.ResetColor();
             terminal.SetColor(TerminalColor.Gray);
-            terminal.AppendLine($"  project: {projectLogPath}");
+            terminal.AppendLine($"  path: {projectLogPath}");
             terminal.ResetColor();
             return 1;
         }
@@ -54,15 +53,18 @@ public static class FollowCommand
         terminal.AppendLine($"  (Ctrl+C or q to stop)");
         terminal.ResetColor();
 
-        // Initial parse
-        var result = await EntryParser.ParseFileFullAsync(activeFile);
-        var conversation = new Conversation(sessionId, result.Entries);
+        // Initial parse via provider
+        var entries = new List<Entry>();
+        await foreach (var entry in provider.GetEntriesFromFileAsync(activeFile))
+            entries.Add(entry);
+        var conversation = new Conversation(sessionId, entries);
 
         // Build session context (single session in follow mode)
         var ctx = new SessionContext(sessionId, null, fileInfo.CreationTimeUtc, 0, 1);
 
         // Launch live pager
-        var pager = new LiveConversationPager(conversation, terminal, activeFile, ctx)
+        var lineParser = provider.CreateLineParser();
+        var pager = new LiveConversationPager(conversation, terminal, activeFile, lineParser, ctx)
         {
             WatchPattern = watchPattern
         };

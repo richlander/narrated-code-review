@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Terminal;
 using AgentLogs.Domain;
-using AgentLogs.Parsing;
 using AgentTrace.Services;
 
 namespace AgentTrace.UI;
@@ -14,6 +13,7 @@ public class LiveConversationPager
     private readonly ITerminal _terminal;
     private readonly string _filePath;
     private readonly string _sessionId;
+    private readonly Func<string, Entry?> _lineParser;
     private readonly SessionContext? _sessionContext;
     private readonly BookmarkStore? _bookmarkStore;
     private bool _isBookmarked;
@@ -76,7 +76,7 @@ public class LiveConversationPager
     /// </summary>
     public string? WatchMatchContext => _watchMatchContext;
 
-    public LiveConversationPager(Conversation conversation, ITerminal terminal, string filePath, SessionContext? sessionContext = null, BookmarkStore? bookmarkStore = null)
+    public LiveConversationPager(Conversation conversation, ITerminal terminal, string filePath, Func<string, Entry?> lineParser, SessionContext? sessionContext = null, BookmarkStore? bookmarkStore = null)
     {
         _conversation = conversation;
         _entries = new List<Entry>(conversation.Turns.SelectMany(t => t.Entries));
@@ -84,6 +84,7 @@ public class LiveConversationPager
         _terminal = terminal;
         _filePath = filePath;
         _sessionId = conversation.SessionId;
+        _lineParser = lineParser;
         _sessionContext = sessionContext;
         _bookmarkStore = bookmarkStore;
         _isBookmarked = bookmarkStore?.IsBookmarked(conversation.SessionId) ?? false;
@@ -216,7 +217,7 @@ public class LiveConversationPager
 
                 try
                 {
-                    var entry = EntryParser.ParseLineFull(line);
+                    var entry = _lineParser(line);
                     if (entry != null)
                         newEntries.Add(entry);
                 }

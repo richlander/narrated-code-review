@@ -217,3 +217,14 @@ public static class CopilotEntryParser
         return DateTime.UtcNow;
     }
 }
+
+/// <summary>
+/// Wraps CopilotEntryParser.ParseLine state for use as a Func&lt;string, Entry?&gt; delegate.
+/// Needed because ref parameters can't be captured in lambdas.
+/// </summary>
+public class CopilotLineParserState
+{
+    private string? _sessionId;
+
+    public Entry? ParseLine(string line) => CopilotEntryParser.ParseLine(line, ref _sessionId);
+}
